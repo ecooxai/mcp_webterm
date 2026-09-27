@@ -1,0 +1,29 @@
+# Dynamic per-port Colab previews. Only observed, user-owned runtime ports are
+# approved by the loopback ask endpoint; no wildcard/DNS API credential needed.
+https:// {
+    tls {
+        on_demand
+    }
+    @colab_preview {
+        header_regexp Host (?i)^[1-9][0-9]{3,4}-proxy-colabdev\.alima\.freeddns\.org(?::443)?$
+        expression `{http.request.host} == {http.request.tls.server_name}`
+    }
+    handle @colab_preview {
+        header {
+            Strict-Transport-Security "max-age=31536000"
+            Referrer-Policy "no-referrer"
+            X-Content-Type-Options "nosniff"
+            -Server
+        }
+        reverse_proxy 127.0.0.1:9992 {
+            header_up -X-WebTerm-Preview-Port
+            header_up -X-WebTerm-App-Authorization
+            header_up -X-WebTerm-Control
+            stream_close_delay 5m
+        }
+    }
+    handle {
+        respond "Unrecognized preview hostname" 421
+    }
+    # No access log: callbacks carry a short-lived one-time ticket.
+}

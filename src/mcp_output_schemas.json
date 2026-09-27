@@ -1,0 +1,842 @@
+{
+  "status": {
+    "type": "object",
+    "properties": {
+      "service": {
+        "const": "webterm"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "runtime_ready": {
+        "type": "boolean"
+      },
+      "workspaces": {
+        "type": "integer"
+      },
+      "running_terminals": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "service",
+      "running",
+      "runtime_ready",
+      "workspaces",
+      "running_terminals"
+    ],
+    "additionalProperties": false
+  },
+  "workspace_list": {
+    "type": "object",
+    "properties": {
+      "workspaces": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "workspace_id": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "name": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "integer"
+            },
+            "updated_at": {
+              "type": "integer"
+            },
+            "terminals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "workspace_id": {
+                    "type": "string",
+                    "pattern": "^/"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "backend": {
+                    "type": "string"
+                  },
+                  "runtime_pid": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "integer"
+                  },
+                  "updated_at": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id",
+                  "workspace_id",
+                  "name",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "id",
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "truncated": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "workspaces",
+      "truncated"
+    ],
+    "additionalProperties": false
+  },
+  "workspace_ensure": {
+    "type": "object",
+    "properties": {
+      "workspace": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          },
+          "terminals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "workspace_id": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "backend": {
+                  "type": "string"
+                },
+                "runtime_pid": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                },
+                "updated_at": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "workspace_id",
+                "name",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "id",
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "workspace"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_list": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminals": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "name": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "backend": {
+              "type": "string"
+            },
+            "runtime_pid": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "integer"
+            },
+            "updated_at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "workspace_id",
+            "name",
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "truncated": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "terminals",
+      "truncated"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_create": {
+    "type": "object",
+    "properties": {
+      "terminal": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string"
+          },
+          "runtime_pid": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "terminal"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_stop": {
+    "type": "object",
+    "properties": {
+      "terminal": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string"
+          },
+          "runtime_pid": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "workspace_id",
+          "name",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "terminal"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_write": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "bytes_written": {
+        "type": "integer"
+      },
+      "enter": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "terminal_id",
+      "bytes_written",
+      "enter"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_resize": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "cols": {
+        "type": "integer"
+      },
+      "rows": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "terminal_id",
+      "cols",
+      "rows"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_read": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "running": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "output": {
+        "type": "string"
+      },
+      "output_chars": {
+        "type": "integer"
+      },
+      "output_truncated": {
+        "type": "boolean"
+      },
+      "omitted_chars": {
+        "type": "integer"
+      },
+      "full_output": {
+        "type": "boolean"
+      },
+      "interrupted": {
+        "type": "boolean"
+      },
+      "retention_limited": {
+        "type": "boolean"
+      },
+      "capture_limited": {
+        "type": "boolean"
+      },
+      "filter_input_limited": {
+        "type": "boolean"
+      },
+      "filter_stderr_truncated": {
+        "type": "boolean"
+      },
+      "filter_timed_out": {
+        "type": "boolean"
+      },
+      "filter_output_limit_hit": {
+        "type": "boolean"
+      },
+      "capture_lines": {
+        "type": "integer"
+      },
+      "filter_exit_code": {
+        "type": "integer"
+      },
+      "filter_stderr": {
+        "type": "string"
+      },
+      "filter_input_chars": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "workspace_id",
+      "terminal_id",
+      "running",
+      "exit_code",
+      "output",
+      "output_chars",
+      "output_truncated",
+      "omitted_chars",
+      "full_output"
+    ],
+    "additionalProperties": false
+  },
+  "terminal_capture": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "running": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "output": {
+        "type": "string"
+      },
+      "output_chars": {
+        "type": "integer"
+      },
+      "output_truncated": {
+        "type": "boolean"
+      },
+      "omitted_chars": {
+        "type": "integer"
+      },
+      "full_output": {
+        "type": "boolean"
+      },
+      "interrupted": {
+        "type": "boolean"
+      },
+      "retention_limited": {
+        "type": "boolean"
+      },
+      "capture_limited": {
+        "type": "boolean"
+      },
+      "filter_input_limited": {
+        "type": "boolean"
+      },
+      "filter_stderr_truncated": {
+        "type": "boolean"
+      },
+      "filter_timed_out": {
+        "type": "boolean"
+      },
+      "filter_output_limit_hit": {
+        "type": "boolean"
+      },
+      "capture_lines": {
+        "type": "integer"
+      },
+      "filter_exit_code": {
+        "type": "integer"
+      },
+      "filter_stderr": {
+        "type": "string"
+      },
+      "filter_input_chars": {
+        "type": "integer"
+      }
+    },
+    "required": [
+      "workspace_id",
+      "terminal_id",
+      "running",
+      "exit_code",
+      "output",
+      "output_chars",
+      "output_truncated",
+      "omitted_chars",
+      "full_output"
+    ],
+    "additionalProperties": false
+  },
+  "bash": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "running": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "output": {
+        "type": "string"
+      },
+      "output_chars": {
+        "type": "integer"
+      },
+      "output_truncated": {
+        "type": "boolean"
+      },
+      "omitted_chars": {
+        "type": "integer"
+      },
+      "full_output": {
+        "type": "boolean"
+      },
+      "interrupted": {
+        "type": "boolean"
+      },
+      "retention_limited": {
+        "type": "boolean"
+      },
+      "capture_limited": {
+        "type": "boolean"
+      },
+      "filter_input_limited": {
+        "type": "boolean"
+      },
+      "filter_stderr_truncated": {
+        "type": "boolean"
+      },
+      "filter_timed_out": {
+        "type": "boolean"
+      },
+      "filter_output_limit_hit": {
+        "type": "boolean"
+      },
+      "language": {
+        "type": "string",
+        "enum": [
+          "bash",
+          "python"
+        ]
+      },
+      "retained_limit_chars": {
+        "type": "integer"
+      },
+      "started_at": {
+        "type": "number"
+      },
+      "updated_at": {
+        "type": "number"
+      },
+      "elapsed_s": {
+        "type": "number"
+      },
+      "command_pid": {
+        "type": "integer"
+      },
+      "starting": {
+        "type": "boolean"
+      },
+      "retained_output": {
+        "type": "boolean"
+      },
+      "truncated": {
+        "type": "boolean"
+      },
+      "truncation_note": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "workspace_id",
+      "terminal_id",
+      "running",
+      "exit_code",
+      "output"
+    ],
+    "additionalProperties": false
+  },
+  "python": {
+    "type": "object",
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "running": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "exit_code": {
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "output": {
+        "type": "string"
+      },
+      "output_chars": {
+        "type": "integer"
+      },
+      "output_truncated": {
+        "type": "boolean"
+      },
+      "omitted_chars": {
+        "type": "integer"
+      },
+      "full_output": {
+        "type": "boolean"
+      },
+      "interrupted": {
+        "type": "boolean"
+      },
+      "retention_limited": {
+        "type": "boolean"
+      },
+      "capture_limited": {
+        "type": "boolean"
+      },
+      "filter_input_limited": {
+        "type": "boolean"
+      },
+      "filter_stderr_truncated": {
+        "type": "boolean"
+      },
+      "filter_timed_out": {
+        "type": "boolean"
+      },
+      "filter_output_limit_hit": {
+        "type": "boolean"
+      },
+      "language": {
+        "type": "string",
+        "enum": [
+          "bash",
+          "python"
+        ]
+      },
+      "retained_limit_chars": {
+        "type": "integer"
+      },
+      "started_at": {
+        "type": "number"
+      },
+      "updated_at": {
+        "type": "number"
+      },
+      "elapsed_s": {
+        "type": "number"
+      },
+      "command_pid": {
+        "type": "integer"
+      },
+      "starting": {
+        "type": "boolean"
+      },
+      "retained_output": {
+        "type": "boolean"
+      },
+      "truncated": {
+        "type": "boolean"
+      },
+      "truncation_note": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "workspace_id",
+      "terminal_id",
+      "running",
+      "exit_code",
+      "output"
+    ],
+    "additionalProperties": false
+  },
+  "get_image": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "workspace_id": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "path": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "mime_type": {
+        "type": "string",
+        "enum": [
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp"
+        ]
+      },
+      "bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16777216
+      },
+      "width": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16384
+      },
+      "height": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16384
+      }
+    },
+    "required": [
+      "workspace_id",
+      "path",
+      "mime_type",
+      "bytes",
+      "width",
+      "height"
+    ]
+  }
+}

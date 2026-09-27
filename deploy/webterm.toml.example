@@ -1,0 +1,9 @@
+listen = "127.0.0.1:7681"
+database_path = "/var/lib/webterm/webterm.db"
+runtime_socket = "/var/lib/webterm/runtime.sock"
+# Transitional compatibility for already-running wt- sessions only.
+tmux_socket = "/var/lib/webterm/tmux.sock"
+workspace_roots = ["/home/admin/project"]
+auth_token_file = "/etc/webterm/token"
+web_password_hash_file = "/run/credentials/webterm.service/webterm-password-hash"
+web_session_ttl_seconds = 28800

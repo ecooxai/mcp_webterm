@@ -1,0 +1,23 @@
+[Unit]
+Description=Webterm persistent tmux runtime
+After=local-fs.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+ExecStart=/usr/bin/tmux -S /var/lib/webterm/tmux.sock -f /etc/webterm/tmux.conf -D
+Restart=always
+RestartSec=2s
+KillMode=control-group
+StateDirectory=webterm
+StateDirectoryMode=0700
+UMask=0077
+# This process is the user terminal boundary. Do not apply privilege/mount
+# sandboxing here: child shells must retain normal host semantics, including
+# setuid sudo and root writes. The HTTP frontend remains separately hardened.
+NoNewPrivileges=false
+
+
+[Install]
+WantedBy=multi-user.target

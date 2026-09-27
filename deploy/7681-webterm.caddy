@@ -1,0 +1,31 @@
+7681-webterm.alima.freeddns.org {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		?Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# xterm.js sets runtime geometry using style attributes. Scripts remain
+		# same-origin only and all application assets are vendored by webterm.
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:7681 {
+		# Graceful reloads give established terminal streams time to reconnect.
+		# No stream_timeout: idle terminals must not have a proxy lifetime limit.
+		stream_close_delay 5m
+	}
+
+	# Authentication and terminal URLs may carry sensitive state. Caddy also
+	# redacts Authorization/Cookie headers by default; omit these routes fully.
+	@url_passwd query passwd=*
+	@url_password query password=*
+	log_skip @url_passwd
+	log_skip @url_password
+	log_skip /api/v1/login*
+	log_skip /api/v1/logout*
+	log_skip /api/v1/terminals/*
+	log_skip /mcp*
+	log_skip /proxy/*
+	log_skip /api/v1/processes*
+}

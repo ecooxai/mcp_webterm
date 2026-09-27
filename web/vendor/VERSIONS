@@ -1,0 +1,8 @@
+@xterm/xterm 5.5.0
+  source: https://registry.npmjs.org/@xterm/xterm/-/xterm-5.5.0.tgz
+  lib/xterm.js sha512: 1ae8f0e466a31798acde73281aff57fad08ca9e3cb2ffeb4aaf02fd4ba1f5194d5f632bc10d6ccf4bfa668698eb0dcee65a8aec9cfdfa69875293f6e479c3709
+  css/xterm.css sha512: 01b36b8ffa121c96882e071d9e4626f83434f12a956d9f2396425b172c92d560dc01a5c07007f1267087ebd7a5ee85604f0570c80e6ee53f91745c94ca4ad5dd
+
+@xterm/addon-fit 0.10.0
+  source: https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.10.0.tgz
+  lib/addon-fit.js sha512: 2c15b2b6f5eca49c5671bf26335feb4b36e6f957b1bd90801c0e2d3c0994318623034b340417ae9298be01dc4cee818018347c41f61c3634a407a38e23964bf7

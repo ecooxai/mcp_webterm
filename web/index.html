@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#080b11">
+    <meta name="csrf-token" content="">
+    <title>webterm</title>
+    <link rel="stylesheet" href="/assets/vendor/xterm-5.5.0.css">
+    <link rel="stylesheet" href="/assets/app.css">
+    <script defer src="/assets/vendor/xterm-5.5.0.js"></script>
+    <script defer src="/assets/vendor/addon-fit-0.10.0.js"></script>
+    <link rel="stylesheet" href="/assets/process-monitor.css">
+    <script defer src="/assets/process-monitor.js"></script>
+    <link rel="stylesheet" href="/assets/explorer.css">
+    <script defer src="/assets/explorer.js"></script>
+    <script defer src="/assets/tool-log.js"></script>
+    <script defer src="/assets/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#terminal-panel">Skip to terminal</a>
+
+    <main id="login-view" class="login-shell" aria-labelledby="login-title">
+      <section class="login-card">
+        <div class="brand-mark" aria-hidden="true">&gt;_</div>
+        <p class="eyebrow">Private console</p>
+        <h1 id="login-title">Sign in to webterm</h1>
+        <p class="login-copy">Your workspaces and persistent terminal sessions, from this browser.</p>
+        <form id="login-form" novalidate>
+          <label for="password">Password</label>
+          <div class="password-row">
+            <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+            <button id="password-toggle" class="icon-button" type="button" aria-label="Show password">Show</button>
+          </div>
+          <p id="login-error" class="form-error" role="alert" aria-live="polite"></p>
+          <button id="login-submit" class="primary-button" type="submit">Sign in</button>
+        </form>
+      </section>
+    </main>
+
+    <div id="app-view" class="app-shell" hidden>
+      <header class="app-header">
+        <button id="drawer-open" class="icon-button drawer-button" type="button" aria-label="Toggle workspaces" aria-controls="sidebar" aria-expanded="true">
+          <span aria-hidden="true">☰</span>
+        </button>
+        <div class="header-brand"><span aria-hidden="true">&gt;_</span><span>webterm</span></div>
+        <div id="active-context" class="active-context" aria-live="polite">
+          <span id="active-workspace" class="active-workspace-path" tabindex="0" aria-label="Active workspace path">No workspace selected</span>
+          <span class="context-divider" aria-hidden="true">/</span>
+          <strong id="active-terminal">Select a terminal</strong>
+          <span id="active-backend" class="active-backend" hidden></span>
+        </div>
+        <div class="header-actions">
+          <span id="connection-chip" class="connection-chip is-idle" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">Idle</span></span>
+          <button id="logout-button" class="icon-button log-open-button" type="button" aria-label="Open MCP tool logs" title="MCP tool logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M7 3h13v18H4V6m4 1h8M8 11h8m-8 4h5"/></svg></button>
+        </div>
+      </header>
+
+      <div class="app-body">
+        <button id="drawer-scrim" class="drawer-scrim" type="button" aria-label="Close workspaces" tabindex="-1"></button>
+        <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
+          <div class="sidebar-header">
+            <div>
+              <p class="eyebrow">Navigation</p>
+              <h2>Workspaces</h2>
+            </div>
+            <button id="workspace-create" class="icon-button capability-control" type="button" aria-label="Add workspace" title="Add workspace" hidden>+</button>
+          </div>
+          <div id="workspace-list" class="workspace-list" role="tree" aria-label="Workspaces and terminals"></div>
+          <div id="nav-empty" class="nav-empty" hidden>
+            <p>No workspaces yet.</p>
+            <span>Use + to choose a server folder.</span>
+          </div>
+          <div class="sidebar-footer">
+            <button id="refresh-button" class="text-button" type="button">Refresh</button>
+            <span id="refresh-status" role="status" aria-live="polite"></span>
+          </div>
+        </aside>
+
+        <section id="terminal-panel" class="terminal-panel" aria-label="Terminal" tabindex="-1">
+          <div class="terminal-tabbar">
+            <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Open terminals"></div>
+            <button id="terminal-add-tab" class="terminal-add-tab" type="button" aria-label="New terminal" title="New terminal" hidden>+</button>
+          </div>
+          <div id="terminal-empty" class="terminal-empty">
+            <div class="empty-prompt" aria-hidden="true">$</div>
+            <h2>Your workspace, at a glance</h2>
+            <p>Expand a workspace to browse files. Click once to preview, again to open in Viewer. Use the folder icon to switch to terminals.</p>
+            <button id="empty-open-drawer" class="secondary-button" type="button">Browse workspaces</button>
+          </div>
+          <div id="terminal-mount" class="terminal-mount"></div>
+          <button id="new-output-button" class="new-output-button" type="button" hidden>
+            <span aria-hidden="true">↓</span> New output
+          </button>
+          <div id="terminal-announcer" class="sr-only" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <footer id="status-bar" class="status-bar" aria-label="System status and terminal shortcuts">
+        <div class="status-bar-content">
+          <div id="system-metrics" class="system-metrics" aria-label="System metrics">
+            <button type="button" id="cpu-metric" class="metric metric-button" aria-label="Open task manager, CPU usage" title="Open task manager">CPU —</button>
+            <button type="button" id="memory-metric" class="metric metric-button" aria-label="Open task manager, memory usage" title="Open task manager">RAM —</button>
+            <span id="metrics-freshness" class="metrics-freshness">Unavailable</span>
+          </div>
+          <nav id="accessory-bar" class="accessory-bar" aria-label="Terminal shortcuts">
+            <button type="button" data-terminal-key="escape" aria-label="Escape" title="Escape"><span aria-hidden="true">⎋</span></button>
+            <button type="button" data-terminal-key="tab" aria-label="Tab" title="Tab"><span aria-hidden="true">⇥</span></button>
+            <button id="ctrl-key" type="button" aria-label="Control modifier" title="Control modifier" aria-pressed="false"><span aria-hidden="true">⌃</span></button>
+            <button type="button" data-terminal-key="left" aria-label="Left arrow" title="Left arrow"><span aria-hidden="true">←</span></button>
+            <button type="button" data-terminal-key="up" aria-label="Up arrow" title="Up arrow"><span aria-hidden="true">↑</span></button>
+            <button type="button" data-terminal-key="down" aria-label="Down arrow" title="Down arrow"><span aria-hidden="true">↓</span></button>
+            <button type="button" data-terminal-key="right" aria-label="Right arrow" title="Right arrow"><span aria-hidden="true">→</span></button>
+            <button id="mouse-mode-key" type="button" aria-label="Application mouse mode" title="Enable application mouse mode" aria-pressed="false"><span aria-hidden="true">◉</span></button>
+            <button id="copy-key" type="button" aria-label="Copy selection" title="Copy selection"><span aria-hidden="true">⧉</span></button>
+            <button id="paste-key" type="button" aria-label="Paste from clipboard" title="Paste from clipboard"><span aria-hidden="true">▣</span></button>
+          </nav>
+        </div>
+      </footer>
+    </div>
+
+    <dialog id="action-dialog" aria-labelledby="dialog-title">
+      <form id="action-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p id="dialog-eyebrow" class="eyebrow"></p>
+            <h2 id="dialog-title"></h2>
+          </div>
+          <button id="dialog-close" class="icon-button" type="button" aria-label="Close dialog">×</button>
+        </div>
+        <p id="dialog-copy" class="dialog-copy"></p>
+        <div id="dialog-fields"></div>
+        <p id="dialog-error" class="form-error" role="alert" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="dialog-cancel" class="secondary-button" type="button">Cancel</button>
+          <button id="dialog-submit" class="primary-button" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

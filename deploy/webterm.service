@@ -1,0 +1,44 @@
+[Unit]
+Description=Webterm persistent terminal manager
+Requires=webterm-runtime.service
+After=network.target webterm-runtime.service
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+# Development deployment only: rotate/remove this argv password before production.
+ExecStart=/usr/local/bin/webterm --config /etc/webterm/webterm.toml --passwd 2208 serve
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+KillMode=control-group
+StateDirectory=webterm
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/webterm /home/admin/project
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

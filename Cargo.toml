@@ -1,0 +1,47 @@
+[package]
+name = "webterm"
+version = "0.1.0"
+edition = "2024"
+description = "Persistent named terminal workspaces"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+anyhow = "1.0"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+crossterm = "0.29"
+portable-pty = "0.9"
+rand_core = { version = "0.6", features = ["getrandom"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+signal-hook = "0.3"
+subtle = "2.6"
+tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "signal", "time", "io-util", "fs"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.18", features = ["v4"] }
+vt100 = "=0.16.2"
+
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+tokio-util = { version = "0.7", features = ["io"] }
+
+[target.'cfg(target_env = "gnu")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.21"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

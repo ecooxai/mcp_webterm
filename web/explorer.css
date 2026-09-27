@@ -873,3 +873,78 @@
 }
 .preview-media-facts dt { color: #71879f; }
 .preview-media-facts dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+/* Terminal click-to-preview: URLs and file paths under the pointer. */
+.terminal-link-preview {
+  position: absolute;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  background: #0e1724;
+  border: 1px solid #2f4661;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 18px 48px #000a;
+}
+.terminal-link-preview[hidden] {
+  display: none;
+}
+.link-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px 7px 12px;
+  border-bottom: 1px solid #233249;
+  flex: none;
+}
+.link-preview-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.link-preview-title {
+  font-size: 12px;
+  color: #e6f2ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-preview-subtitle {
+  font-size: 11px;
+  color: var(--muted);
+}
+.link-preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.link-preview-item + .link-preview-item {
+  border-top: 1px solid #233249;
+}
+.link-preview-item > .preview-message {
+  padding: 10px 12px;
+}
+.link-preview-actions {
+  display: flex;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.link-preview-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+.preview-folder-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 12px 10px;
+  font: 12px/1.6 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  color: #cbd5e1;
+}
+.preview-folder-list .is-dir {
+  color: #7dd3fc;
+}

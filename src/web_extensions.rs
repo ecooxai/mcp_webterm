@@ -9,6 +9,15 @@ async fn query_port_dispatch(State(state): State<AppState>, mut request: Request
         request.extensions_mut().insert(crate::subdomain_proxy::HostPreview);
         return browser_port_proxy(State(state),request).await;
     }
+    if let Some(port)=crate::port_proxy::referer_port(request.headers(),request.uri()) {
+        let target=format!("/proxy/{port}{}",request.uri().path_and_query().map(|v|v.as_str()).unwrap_or("/"));
+        // Navigations are redirected so the document URL keeps the prefix for its own relative requests.
+        if request.headers().get("sec-fetch-mode").is_some_and(|v|v=="navigate") {
+            return (StatusCode::TEMPORARY_REDIRECT,[(header::LOCATION,target)]).into_response();
+        }
+        if let Ok(uri)=target.parse() {*request.uri_mut()=uri;}
+        return browser_port_proxy(State(state),request).await;
+    }
     let selected=match crate::query_proxy::selected(request.uri(),request.headers()) {
         Ok(p)=>p,Err(e)=>return (StatusCode::BAD_REQUEST,e).into_response(),
     };

@@ -16,6 +16,12 @@ async fn explorer_js() -> Response {
         "text/javascript; charset=utf-8",
     )
 }
+async fn terminal_links_js() -> Response {
+    html_response(
+        include_str!("../web/terminal-links.js"),
+        "text/javascript; charset=utf-8",
+    )
+}
 async fn explorer_css() -> Response {
     html_response(
         include_str!("../web/explorer.css"),
@@ -63,6 +69,42 @@ async fn explorer_preview(
     let config = state.config.clone();
     let mut r = api_task(
         move || crate::workspace_files::preview(&config, &q.workspace_id, &q.path),
+        StatusCode::OK,
+    )
+    .await;
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r
+}
+#[derive(Deserialize)]
+struct ResolveQuery {
+    workspace_id: String,
+    #[serde(default)]
+    terminal_id: Option<i64>,
+    text: String,
+}
+async fn explorer_resolve(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ResolveQuery>,
+) -> Response {
+    if !explorer_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = state.config.clone();
+    let mut r = api_task(
+        move || {
+            // Relative paths printed by a program are relative to its cwd, not the workspace.
+            let cwd = q.terminal_id.and_then(|id| {
+                let terminal = Database::open_config(&config).ok()?.terminal_by_id(id).ok()?;
+                if terminal.backend() != "native-pty" {
+                    return None;
+                }
+                let info = TerminalManager::new(&config).ok()?.native().info(&terminal.tmux_session).ok()?;
+                crate::workspace_files::foreground_cwd(info.pid?)
+            });
+            crate::workspace_files::resolve(&config, &q.workspace_id, cwd.as_deref(), &q.text)
+        },
         StatusCode::OK,
     )
     .await;
@@ -189,6 +231,7 @@ mod explorer_route_tests {
             "/api/v1/files/list?workspace_id=1",
             "/api/v1/files/preview?workspace_id=1&path=a",
             "/api/v1/files/raw/1/a",
+            "/api/v1/files/resolve?workspace_id=1&text=a",
             "/api/v1/tool-logs",
             "/api/v1/tool-logs/1",
         ] {

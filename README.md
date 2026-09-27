@@ -382,6 +382,7 @@ New read-only HTTP routes:
 - `GET /api/v1/files/list?workspace_id=<id-or-path>&path=<relative-or-absolute>&offset=0`
 - `GET /api/v1/files/preview?workspace_id=<id-or-path>&path=<file>`
 - `GET|HEAD /api/v1/files/raw/<workspace-id>/<relative-path>`
+- `GET /api/v1/files/resolve?workspace_id=<id-or-path>&terminal_id=<id>&text=<path-or-name>` — resolves text clicked in a terminal: exact paths relative to the terminal's foreground cwd or the workspace, else a bounded file-name search (cwd first, hidden and build directories skipped).
 - `GET /api/v1/tool-logs?q=&workspace=&task=&status=&sort=date&offset=0`
 - `GET /api/v1/tool-logs/<id>`
 

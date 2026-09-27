@@ -188,6 +188,175 @@ pub fn preview(config: &Config, workspace: &str, path: &str) -> Result<Value> {
     Ok(result)
 }
 
+/// Current directory of the terminal's foreground job (e.g. an editor or CLI
+/// started from the shell), falling back to the shell itself.
+pub fn foreground_cwd(pid: u32) -> Option<PathBuf> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Fields after the parenthesised command: state ppid pgrp session tty_nr tpgid.
+    let tpgid = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(5)
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0);
+    tpgid
+        .into_iter()
+        .map(|p| p as u64)
+        .chain([u64::from(pid)])
+        .find_map(|p| fs::read_link(format!("/proc/{p}/cwd")).ok())
+}
+
+const RESOLVE_LIMIT: usize = 50;
+const SEARCH_ENTRY_LIMIT: usize = 200_000;
+const SEARCH_TIME_LIMIT: std::time::Duration = std::time::Duration::from_millis(1500);
+const SEARCH_SKIP: [&str; 7] = [".git", "node_modules", "target", ".venv", "__pycache__", ".cache", ".npm"];
+
+/// Resolve text clicked in a terminal to workspace files. Exact paths are tried
+/// relative to the terminal's cwd and the workspace; otherwise the workspace is
+/// searched for files with the same name (and matching trailing path segments).
+pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str) -> Result<Value> {
+    let text = text.trim();
+    let text = text.strip_prefix("file://").unwrap_or(text);
+    if text.is_empty() || text.len() > 4096 || text.contains('\0') {
+        bail!("invalid file path");
+    }
+    let db = Database::open_config(config)?;
+    let roots = db
+        .list_workspaces()?
+        .into_iter()
+        .filter_map(|w| canonical_workspace_path(config, &w.path).ok().map(|root| (w.id, root)))
+        .collect::<Vec<_>>();
+    let root = root(config, workspace)?;
+    let owner = |path: &Path| {
+        roots
+            .iter()
+            .filter(|(_, r)| path.starts_with(r))
+            .max_by_key(|(_, r)| r.as_os_str().len())
+            .cloned()
+    };
+    let requested = match text.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME").map(|h| PathBuf::from(h).join(rest)),
+        None => Some(PathBuf::from(text)),
+    };
+    let mut candidates = Vec::new();
+    if let Some(requested) = requested {
+        if requested.is_absolute() {
+            candidates.push(requested);
+        } else {
+            if let Some(cwd) = cwd {
+                candidates.push(cwd.join(&requested));
+            }
+            candidates.push(root.join(&requested));
+        }
+    }
+    for candidate in candidates {
+        let Ok(canonical) = candidate.canonicalize() else { continue };
+        let Some((id, owner_root)) = owner(&canonical) else { continue };
+        if let Some(entry) = resolved_entry(id, &owner_root, &canonical, true) {
+            return Ok(json!({"query":text,"exact":true,"matches":[entry],"truncated":false}));
+        }
+    }
+
+    // Not found as a path: search the workspace by file name and trailing segments.
+    let segments = Path::new(text)
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(v) => Some(v.to_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let Some(name) = segments.last().cloned() else {
+        return Ok(json!({"query":text,"exact":false,"matches":[],"truncated":false}));
+    };
+    let suffix = segments.iter().collect::<PathBuf>();
+    // Hidden trees (.cargo, .local, .rustup...) dominate home workspaces; enter them only when asked.
+    let hidden_query = segments.iter().any(|s| s.to_string_lossy().starts_with('.'));
+    // The shell's cwd is searched first so nearby files rank above the rest of the workspace.
+    let mut starts = Vec::new();
+    if let Some(cwd) = cwd.and_then(|c| c.canonicalize().ok()) {
+        if let Some((_, cwd_root)) = owner(&cwd) {
+            starts.push(cwd);
+            starts.push(cwd_root);
+        }
+    }
+    starts.push(root.clone());
+    let started = std::time::Instant::now();
+    let mut matches = Vec::new();
+    let mut seen_dirs = std::collections::HashSet::new();
+    let mut visited = 0usize;
+    let mut truncated = false;
+    'walk: for start in starts {
+        let mut queue = std::collections::VecDeque::from([start]);
+        while let Some(dir) = queue.pop_front() {
+            if !seen_dirs.insert(dir.clone()) {
+                continue;
+            }
+            let Ok(items) = fs::read_dir(&dir) else { continue };
+            let mut children = Vec::new();
+            for item in items.flatten() {
+                visited += 1;
+                if visited > SEARCH_ENTRY_LIMIT || started.elapsed() > SEARCH_TIME_LIMIT {
+                    truncated = true;
+                    break 'walk;
+                }
+                let Ok(file_type) = item.file_type() else { continue };
+                let file_name = item.file_name();
+                if file_type.is_dir() {
+                    let hidden = file_name.to_string_lossy().starts_with('.');
+                    if !SEARCH_SKIP.iter().any(|skip| file_name == *skip) && (hidden_query || !hidden) {
+                        children.push(item.path());
+                    }
+                    continue;
+                }
+                if file_name != name {
+                    continue;
+                }
+                let path = item.path();
+                if !path.ends_with(&suffix) {
+                    continue;
+                }
+                let Ok(canonical) = path.canonicalize() else { continue };
+                if matches.iter().any(|m: &Value| m["path"] == json!(canonical)) {
+                    continue;
+                }
+                let Some((id, owner_root)) = owner(&canonical) else { continue };
+                if let Some(entry) = resolved_entry(id, &owner_root, &canonical, false) {
+                    matches.push(entry);
+                    if matches.len() >= RESOLVE_LIMIT {
+                        truncated = true;
+                        break 'walk;
+                    }
+                }
+            }
+            children.sort();
+            queue.extend(children);
+        }
+    }
+    Ok(json!({"query":text,"exact":false,"matches":matches,"truncated":truncated}))
+}
+
+fn resolved_entry(workspace_id: i64, root: &Path, canonical: &Path, allow_dir: bool) -> Option<Value> {
+    let relative = canonical.strip_prefix(root).ok()?;
+    let meta = fs::metadata(canonical).ok()?;
+    if !(meta.is_file() || (allow_dir && meta.is_dir())) {
+        return None;
+    }
+    let (kind, mime) = kind(canonical);
+    Some(json!({
+        "workspace_id": workspace_id.to_string(),
+        "workspace_path": root,
+        "path": canonical,
+        "relative_path": relative,
+        "name": canonical.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+        "is_dir": meta.is_dir(),
+        "size": meta.len(),
+        "modified_ms": modified(&meta),
+        "kind": if meta.is_dir() { "folder" } else { kind },
+        "mime_type": mime,
+    }))
+}
+
 /// Best-effort codec/resolution/bitrate via ffprobe when it is installed.
 fn probe_media(path: &std::path::Path) -> Option<Value> {
     let output = std::process::Command::new("ffprobe")
@@ -292,6 +461,25 @@ mod tests {
         assert_eq!(p["text"].as_str().unwrap().len(), TEXT_LIMIT as usize);
         let l = listing(&c, &w, "", 0).unwrap();
         assert_eq!(l["entries"].as_array().unwrap().len(), 2);
+    }
+    #[test]
+    fn resolve_exact_and_search() {
+        let (_t, c, w) = setup();
+        fs::create_dir_all(Path::new(&w).join("src/deep")).unwrap();
+        fs::write(Path::new(&w).join("src/deep/main.rs"), "fn main() {}").unwrap();
+        let exact = resolve(&c, &w, None, "src/deep/main.rs").unwrap();
+        assert_eq!(exact["exact"], true);
+        assert_eq!(exact["matches"][0]["relative_path"], "src/deep/main.rs");
+        let cwd = Path::new(&w).join("src");
+        let from_cwd = resolve(&c, &w, Some(&cwd), "deep/main.rs").unwrap();
+        assert_eq!(from_cwd["exact"], true);
+        let searched = resolve(&c, &w, None, "main.rs").unwrap();
+        assert_eq!(searched["exact"], false);
+        assert_eq!(searched["matches"].as_array().unwrap().len(), 1);
+        let suffix = resolve(&c, &w, None, "other/deep/main.rs").unwrap();
+        assert!(suffix["matches"].as_array().unwrap().is_empty());
+        assert!(resolve(&c, &w, None, "missing.txt").unwrap()["matches"].as_array().unwrap().is_empty());
+        assert!(resolve(&c, &w, None, "/etc/passwd").unwrap()["matches"].as_array().unwrap().is_empty());
     }
     #[test]
     fn ranges() {

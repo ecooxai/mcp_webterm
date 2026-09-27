@@ -2,9 +2,11 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
+		# Proxied runtime ports are previewed in same-origin iframes.
+		X-Frame-Options "SAMEORIGIN"
 		?Referrer-Policy "no-referrer"
-		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Terminal URL previews delegate device access to the framed page.
+		Permissions-Policy "camera=*, microphone=*, geolocation=*, display-capture=*, clipboard-read=*, clipboard-write=*, fullscreen=*"
 		# xterm.js sets runtime geometry using style attributes. Scripts remain
 		# same-origin only and all application assets are vendored by webterm.
 		-Server

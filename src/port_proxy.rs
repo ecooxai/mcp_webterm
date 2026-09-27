@@ -120,6 +120,25 @@ fn redirect(value: &str, prefix: &str, port: u16) -> String {
     value.to_owned()
 }
 
+/// Root-relative requests (`/src/main.js`, `/api/x`) made by a page under `/proxy/{port}/`
+/// lose the prefix. The same-origin Referer still names the port, so route them back.
+pub fn referer_port(headers: &HeaderMap, uri: &Uri) -> Option<u16> {
+    if uri.path().starts_with("/proxy/") || uri.path() == "/proxy" {
+        return None;
+    }
+    let host = headers.get(header::HOST)?.to_str().ok()?;
+    let referer: Uri = headers.get(header::REFERER)?.to_str().ok()?.parse().ok()?;
+    if !referer.authority()?.as_str().eq_ignore_ascii_case(host) {
+        return None;
+    }
+    let rest = referer.path().strip_prefix("/proxy/")?;
+    let port = rest.split('/').next()?;
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    port.parse().ok().filter(|p: &u16| *p > 0)
+}
+
 pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
     let host_preview=request.extensions().get::<crate::subdomain_proxy::HostPreview>().is_some();
     let app_authorization=if host_preview{request.headers().get("x-webterm-app-authorization").cloned()}else{None};
@@ -336,6 +355,10 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
             HeaderValue::from_str(&port.to_string()).unwrap(),
         );
     }
+    if !query_mode && !host_preview && !headers.contains_key("referrer-policy") {
+        // Root-relative subresources are routed back to this port by their Referer.
+        headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
+    }
     headers.insert("x-webterm-proxy", HeaderValue::from_static("loopback"));
     let (parts, body) = response.into_parts();
     Response::from_parts(parts, Body::new(body))
@@ -378,6 +401,22 @@ mod tests {
             redirect("https://example.com/", "/proxy/3000", 3000),
             "https://example.com/"
         );
+    }
+    #[test]
+    fn root_relative_requests_follow_the_proxied_referer() {
+        let headers = |referer: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, HeaderValue::from_static("box:10000"));
+            h.insert(header::REFERER, HeaderValue::from_str(referer).unwrap());
+            h
+        };
+        let uri = |p: &str| p.parse::<Uri>().unwrap();
+        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173/"), &uri("/src/main.ts")), Some(5173));
+        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173"), &uri("/@vite/client")), Some(5173));
+        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173/"), &uri("/proxy/5173/a")), None);
+        assert_eq!(referer_port(&headers("http://evil:10000/proxy/5173/"), &uri("/a")), None);
+        assert_eq!(referer_port(&headers("http://box:10000/"), &uri("/assets/app.js")), None);
+        assert_eq!(referer_port(&headers("http://box:10000/proxy/x/"), &uri("/a")), None);
     }
     #[test]
     fn named_hop_headers_are_stripped() {

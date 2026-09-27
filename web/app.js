@@ -68,6 +68,7 @@
     elements.passwordToggle.addEventListener("click", togglePassword);
     elements.logoutButton.addEventListener("click", () => window.WebTermLog.open());
     window.WebTermExplorer.init({state,elements,request:apiFetch,renderNavigation,layout:() => requestAnimationFrame(fitActiveTerminal),toast:showToast});
+    window.WebTermLinks.init({elements,request:apiFetch});
     window.WebTermLog.init({request:apiFetch,logout});
     for (const button of [elements.cpuMetric, elements.memoryMetric]) {
       button.addEventListener("click", () => { if (state.authenticated) window.WebTermMonitor.open({request:apiFetch, trigger:button}); });
@@ -795,6 +796,7 @@
     if (!terminal) return;
 
     window.WebTermExplorer?.hideViewer();
+    if (state.activeId !== terminal.id) window.WebTermLinks.hide();
     state.activeId = terminal.id;
     state.activeWorkspaceId = terminal.workspaceId;
     rememberTerminal(terminal);
@@ -827,6 +829,7 @@
   }
 
   function deactivateTerminal() {
+    window.WebTermLinks.hide();
     state.activeId = null;
     for (const session of state.sessions.values()) session.surface.hidden = true;
     elements.terminalEmpty.hidden = false;
@@ -901,7 +904,9 @@
     guardViewportScroll(term);
     const fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-    const mouseControl = { appMode: false, replaying: false, requested: new Set() };
+    // Forward mouse reports to apps (vim, less, Claude CLI) by default, like a standard
+    // terminal. Shift+drag still selects locally; ◉ turns reporting off for this tab.
+    const mouseControl = { appMode: true, replaying: false, requested: new Set() };
     term.parser.registerCsiHandler(
       { prefix: "?", final: "h" },
       (params) => trackXtermMouseMode(mouseControl, true, params),
@@ -960,6 +965,7 @@
     term.attachCustomKeyEventHandler((event) => handleTerminalShortcut(event, session));
     term.attachCustomWheelEventHandler((event) => handleTerminalWheel(event, session));
     session.touchCleanup = installTouchSelection(session);
+    session.linkCleanup = window.WebTermLinks.attach(session);
     return session;
   }
 
@@ -999,7 +1005,9 @@
     const session = state.sessions.get(state.activeId);
     const enabled = Boolean(session?.mouseControl.appMode);
     elements.mouseModeKey.setAttribute("aria-pressed", String(enabled));
-    elements.mouseModeKey.title = enabled ? "Disable application mouse mode" : "Enable application mouse mode";
+    elements.mouseModeKey.title = enabled
+      ? "Mouse reports go to the app · click to select text locally (or Shift+drag)"
+      : "Local text selection · click to send mouse to the app";
   }
 
   function installTouchSelection(session) {
@@ -1265,7 +1273,6 @@
     if (operation.kind === "snapshot") {
       session.term.reset();
       session.mouseControl.requested.clear();
-      session.mouseControl.appMode = false;
       session.unread = false;
       const finishSnapshot = () => {
         session.renderBusy = false;
@@ -1387,9 +1394,10 @@
 
   function handleTerminalWheel(event, session) {
     if (!event.deltaY || session.terminal.status !== "running") return true;
-    if (session.terminal.backend === "native-pty" && !session.mouseControl.appMode) {
-      // Native terminals retain history in xterm. Let xterm scroll locally
-      // unless the user explicitly enabled the application's requested mouse mode.
+    if (session.terminal.backend === "native-pty") {
+      // xterm reports the wheel to apps that enabled mouse tracking, sends arrow
+      // keys on the alternate screen otherwise, and scrolls its own history on
+      // the normal screen — the same as a desktop terminal.
       return true;
     }
     event.preventDefault();
@@ -1932,6 +1940,8 @@
     session.renderQueue.length = 0;
     try { session.socket?.close(1000, "client closed"); } catch (_) { /* already closed */ }
     try { session.touchCleanup?.(); } catch (_) { /* already removed */ }
+    try { session.linkCleanup?.(); } catch (_) { /* already removed */ }
+    window.WebTermLinks.hide();
     try { session.term.dispose(); } catch (_) { /* already disposed */ }
   }
 

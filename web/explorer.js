@@ -609,6 +609,33 @@
       );
     }
   }
+  // Standalone preview for callers outside the tree, e.g. terminal link clicks.
+  async function previewElement(ws, entry) {
+    if (!entry.is_dir) return previewCard(ws, await metadata(ws, entry), true);
+    const { body } = await ctx.request(
+      `/files/list?${new URLSearchParams({ workspace_id: ws.id, path: entry.path, offset: "0" })}`,
+      { method: "GET" },
+    );
+    const card = el("article", "file-preview-card");
+    card.dataset.kind = "folder";
+    const header = el("header", "preview-card-header"),
+      path = el("code", "preview-path", entry.path);
+    path.title = entry.path;
+    const detail = el("div", "preview-card-meta");
+    detail.append(
+      el("span", "preview-type", "FOLDER"),
+      el("span", "", `${body.total ?? body.entries.length} entries`),
+      button("Copy path", "text-button", () => copy(entry.path)),
+    );
+    header.append(path, detail);
+    const list = el("ul", "preview-folder-list");
+    for (const child of body.entries)
+      list.append(el("li", child.is_dir ? "is-dir" : "", `${icon(child.kind)} ${child.name}${child.is_dir ? "/" : ""}`));
+    if (body.next_offset !== null && body.next_offset !== undefined)
+      list.append(el("li", "preview-message", "…"));
+    card.append(header, list);
+    return card;
+  }
   function previewCard(ws, info, small) {
     const card = el("article", "file-preview-card");
     card.dataset.path = info.path;
@@ -839,5 +866,6 @@
     clear,
     isViewerActive: () => viewerActive,
     basename,
+    previewElement,
   };
 })();

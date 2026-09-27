@@ -115,9 +115,11 @@ fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration
         .route("/assets/explorer.js", get(explorer_js))
         .route("/assets/explorer.css", get(explorer_css))
         .route("/assets/tool-log.js", get(logs_js))
+        .route("/assets/terminal-links.js", get(terminal_links_js))
         .route("/assets/model-viewer.min.js", get(model_viewer_js))
         .route("/api/v1/files/list", get(explorer_list))
         .route("/api/v1/files/preview", get(explorer_preview))
+        .route("/api/v1/files/resolve", get(explorer_resolve))
         .route("/api/v1/files/raw/{workspace}/{*path}", get(explorer_raw))
         .route("/api/v1/tool-logs", get(browser_tool_logs))
         .route("/api/v1/tool-logs/{id}", get(browser_tool_log_detail))
@@ -234,7 +236,7 @@ fn html_response(body: &'static str, content_type: &'static str) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response.headers_mut().insert("content-security-policy",HeaderValue::from_static("default-src 'self'; connect-src 'self' wss: blob:; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
+    response.headers_mut().insert("content-security-policy",HeaderValue::from_static("default-src 'self'; connect-src 'self' wss: blob:; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob: http: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
     response
         .headers_mut()
         .insert("referrer-policy", HeaderValue::from_static("no-referrer"));

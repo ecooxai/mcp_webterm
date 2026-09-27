@@ -107,6 +107,12 @@
       el("span", "file-viewer-tab-label", "Viewer"),
     );
     ctx.elements.terminalPanel.append(viewer, mini);
+    document.addEventListener("pointerdown", (event) => {
+      if (mini.hidden) return;
+      const target = event.target;
+      if (mini.contains(target) || target.closest?.(".file-tree-row")) return;
+      closeMini();
+    });
     setInterval(() => refresh(), 5000);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refresh();
@@ -174,12 +180,7 @@
         ? "Files · click for terminals"
         : "Terminals · click for files";
     toggle.setAttribute("aria-pressed", String(m.mode === "files"));
-    const path = node.querySelector(".workspace-full-path");
-    path.hidden = !m.pathShown;
-    path.querySelector("code").textContent = ws.path;
-    node
-      .querySelector(".workspace-name-button")
-      .setAttribute("aria-expanded", String(m.pathShown));
+    node.querySelector(".workspace-full-path").hidden = true;
     const search = node.querySelector(".file-tree-search");
     if (!search.dataset.bound) {
       search.dataset.bound = "true";
@@ -532,7 +533,7 @@
     selected = { key, ws, entry };
     const sequence = ++previewSequence;
     mini.hidden = false;
-    ctx.elements.terminalPanel.classList.add("has-mini-preview");
+    mini.dataset.kind = entry.kind || "";
     mini.replaceChildren();
     const heading = el("div", "mini-toolbar");
     heading.append(
@@ -551,6 +552,7 @@
       const info = await metadata(ws, entry);
       if (sequence !== previewSequence) return;
       selected.info = info;
+      mini.dataset.kind = info.kind;
       content.replaceChildren(previewCard(ws, info, true));
     } catch (error) {
       if (sequence === previewSequence)
@@ -568,7 +570,6 @@
     mini.hidden = true;
     mini.querySelectorAll("audio,video").forEach((n) => n.pause());
     mini.replaceChildren();
-    ctx.elements.terminalPanel.classList.remove("has-mini-preview");
     selected = null;
     ctx.layout();
     for (const m of models.values()) if (m.node) renderTree(m);
@@ -654,7 +655,11 @@
           ),
         ),
       );
-      body.append(img);
+      const facts = mediaFacts(info);
+      img.addEventListener("load", () =>
+        facts.set("Resolution", `${img.naturalWidth} × ${img.naturalHeight}`),
+      );
+      body.append(img, facts.node);
     } else if (info.kind === "audio" || info.kind === "video") {
       const media = el(info.kind, "file-media-preview");
       media.controls = true;
@@ -670,7 +675,17 @@
           ),
         ),
       );
-      body.append(media);
+      const facts = mediaFacts(info);
+      media.addEventListener("loadedmetadata", () => {
+        if (media.videoWidth)
+          facts.set("Resolution", `${media.videoWidth} × ${media.videoHeight}`);
+        if (Number.isFinite(media.duration) && media.duration > 0) {
+          facts.set("Duration", duration(media.duration));
+          if (!info.media?.bit_rate)
+            facts.set("Bitrate", `≈ ${bitrate((info.size * 8) / media.duration)}`);
+        }
+      });
+      body.append(media, facts.node);
     } else if (info.kind === "html") {
       const iframe = el("iframe", "file-html-preview");
       iframe.title = `HTML preview: ${info.name}`;
@@ -723,6 +738,45 @@
       detail.append(collapse);
     }
     return card;
+  }
+  function bitrate(bps) {
+    return bps >= 1e6 ? `${(bps / 1e6).toFixed(2)} Mbps` : `${Math.round(bps / 1e3)} kbps`;
+  }
+  function duration(seconds) {
+    const s = Math.round(seconds);
+    const h = Math.floor(s / 3600),
+      m = Math.floor((s % 3600) / 60),
+      r = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+  }
+  function frameRate(value) {
+    const [n, d] = String(value || "").split("/").map(Number);
+    return n && d ? `${Math.round((n / d) * 100) / 100} fps` : "";
+  }
+  // Resolution, codec and bitrate facts; server ffprobe data first, browser values fill gaps.
+  function mediaFacts(info) {
+    const node = el("dl", "preview-media-facts"),
+      rows = new Map();
+    const set = (label, value) => {
+      if (!value) return;
+      let dd = rows.get(label);
+      if (!dd) {
+        dd = el("dd", "");
+        rows.set(label, dd);
+        node.append(el("dt", "", label), dd);
+      }
+      dd.textContent = value;
+    };
+    const m = info.media || {};
+    if (m.width && m.height) set("Resolution", `${m.width} × ${m.height}`);
+    set("Video codec", m.video_codec);
+    set("Audio codec", m.audio_codec);
+    set("Frame rate", frameRate(m.frame_rate));
+    if (m.duration_s) set("Duration", duration(m.duration_s));
+    if (m.bit_rate) set("Bitrate", bitrate(m.bit_rate));
+    if (m.video_bit_rate) set("Video bitrate", bitrate(m.video_bit_rate));
+    set("Type", info.mime_type);
+    return { node, set };
   }
   let modelPromise;
   function loadModelViewer() {

@@ -29,7 +29,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the loopback HTTP service.
+    /// Run the HTTP service.
     Serve,
     /// Run the native PTY runtime daemon in the foreground.
     Runtime,

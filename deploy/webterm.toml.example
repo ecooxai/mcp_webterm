@@ -1,4 +1,4 @@
-listen = "127.0.0.1:7681"
+listen = "0.0.0.0:10000"
 database_path = "/var/lib/webterm/webterm.db"
 runtime_socket = "/var/lib/webterm/runtime.sock"
 # Transitional compatibility for already-running wt- sessions only.

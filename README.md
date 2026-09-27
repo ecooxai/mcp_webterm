@@ -15,8 +15,8 @@ Copy `deploy/webterm.toml.example` to `/etc/webterm/`, create a mode-0600 token 
 
 ```sh
 webterm --config /etc/webterm/webterm.toml config
-curl http://127.0.0.1:7681/health
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7681/api/v1/status
+curl http://127.0.0.1:10000/health
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:10000/api/v1/status
 ```
 
 The same protected bearer token enables the native stateless MCP Streamable
@@ -42,7 +42,7 @@ tool contract.
 
 Install `deploy/7681-webterm.caddy` in the Caddy configuration and validate before reloading. The policy deliberately permits inline styles because xterm.js computes terminal geometry with runtime style attributes; scripts remain restricted to same-origin vendored files. Do not add proxy Basic Auth: the application provides the required password-only login and session/CSRF controls.
 
-Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LISTEN`, `WEBTERM_DATABASE_PATH`, `WEBTERM_RUNTIME_SOCKET`, `WEBTERM_TMUX_SOCKET`, and `WEBTERM_AUTH_TOKEN` are environment overrides. The native runtime socket must be an absolute private Unix-socket path distinct from the database and legacy tmux socket. Non-loopback listen addresses are rejected.
+Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LISTEN`, `WEBTERM_DATABASE_PATH`, `WEBTERM_RUNTIME_SOCKET`, `WEBTERM_TMUX_SOCKET`, and `WEBTERM_AUTH_TOKEN` are environment overrides. The native runtime socket must be an absolute private Unix-socket path distinct from the database and legacy tmux socket. The default listen address is `0.0.0.0:10000` (all interfaces).
 
 ## Browser authentication
 

@@ -18,6 +18,7 @@
 
   const elements = {};
   const state = {
+    lastTerminalByWorkspace: (() => { try { return JSON.parse(localStorage.getItem("webterm.lastTerminalByWorkspace") || "{}") || {}; } catch { return {}; } })(),
     csrf: "",
     authenticated: false,
     capabilities: {},
@@ -574,13 +575,16 @@
   function patchKeyedList(parent, items, keyFor, createNode, updateNode) {
     const existing = new Map(Array.from(parent.children, (node) => [node.dataset.key, node]));
     const keep = new Set();
+    let cursor = parent.firstElementChild;
     for (const item of items) {
       const key = String(keyFor(item));
       let node = existing.get(key);
       if (!node) node = createNode(item, key);
       updateNode(node, item);
       keep.add(key);
-      parent.append(node);
+      // Only move nodes that are out of order: re-attaching resets scroll positions.
+      if (node !== cursor) parent.insertBefore(node, cursor);
+      cursor = node.nextElementSibling;
     }
     for (const [key, node] of existing) {
       if (!keep.has(key)) node.remove();
@@ -616,8 +620,8 @@
     node.dataset.id=workspace.id;const expanded=state.expanded.has(workspace.id);node.classList.toggle("is-expanded",expanded);
     const name=window.WebTermExplorer.basename(workspace.path||workspace.name);
     const toggle=node.querySelector(".workspace-toggle");toggle.dataset.id=workspace.id;toggle.setAttribute("aria-expanded",String(expanded));toggle.setAttribute("aria-label",`${expanded?"Collapse":"Expand"} ${name}`);
-    const nameButton=node.querySelector(".workspace-name-button");nameButton.dataset.id=workspace.id;nameButton.title=workspace.path;nameButton.setAttribute("aria-label",`Show full path for ${name}`);
-    node.querySelector(".workspace-name").textContent=name;node.querySelector(".workspace-count").textContent=String(workspace.terminals.length);
+    const nameButton=node.querySelector(".workspace-name-button");nameButton.dataset.id=workspace.id;nameButton.title=workspace.path;nameButton.setAttribute("aria-label",`Open ${name}`);
+    node.classList.toggle("is-active-workspace",workspace.id===state.activeWorkspaceId);nameButton.setAttribute("aria-current",String(workspace.id===state.activeWorkspaceId));node.querySelector(".workspace-name").textContent=name;node.querySelector(".workspace-count").textContent=String(workspace.terminals.length);
     for(const action of node.querySelectorAll(".workspace-action")){action.dataset.id=workspace.id;if(action.dataset.action==="workspace-rename")action.hidden=!can("workspace","rename");if(action.dataset.action==="workspace-delete")action.hidden=!can("workspace","delete");}
     patchKeyedList(node.querySelector(".terminal-list"),orderedTerminals(workspace.terminals),terminal=>terminal.id,createTerminalNode,updateTerminalNode);
     window.WebTermExplorer.updateWorkspace(node,workspace);
@@ -690,13 +694,11 @@
       state.activeWorkspaceId = id;
       if (state.expanded.has(id)) state.expanded.delete(id);
       else state.expanded.add(id);
-      const workspace = state.workspaces.find((item) => item.id === id);
-      const node = elements.workspaceList.querySelector(`[data-key="${cssEscape(id)}"]`);
-      if (workspace && node) updateWorkspaceNode(node, workspace);
+      renderNavigation();
       return;
     }
     if (action === "workspace-mode") { window.WebTermExplorer.toggleMode(id); return; }
-    if (action === "workspace-path") { window.WebTermExplorer.togglePath(id); return; }
+    if (action === "workspace-path") { activateWorkspace(id); return; }
     if (action === "workspace-copy-path") { window.WebTermExplorer.copyPath(id); return; }
     if (action === "select-terminal") {
       selectTerminal(id);
@@ -707,6 +709,21 @@
       return;
     }
     openDialog(action, id, target);
+  }
+
+  function activateWorkspace(id) {
+    const workspace = state.workspaces.find((item) => item.id === String(id));
+    if (!workspace) return;
+    state.expanded.add(workspace.id);
+    const lastId = state.lastTerminalByWorkspace[workspace.id];
+    const last = workspace.terminals.find((terminal) => terminal.id === lastId);
+    if (last) selectTerminal(last.id);
+    else enterWorkspace(workspace.id);
+  }
+
+  function rememberTerminal(terminal) {
+    state.lastTerminalByWorkspace[terminal.workspaceId] = terminal.id;
+    try { localStorage.setItem("webterm.lastTerminalByWorkspace", JSON.stringify(state.lastTerminalByWorkspace)); } catch {}
   }
 
   function enterWorkspace(id, retry) {
@@ -780,6 +797,7 @@
     window.WebTermExplorer?.hideViewer();
     state.activeId = terminal.id;
     state.activeWorkspaceId = terminal.workspaceId;
+    rememberTerminal(terminal);
     elements.terminalEmpty.hidden = true;
     let session = state.sessions.get(terminal.id);
     if (!session) session = createTerminalSession(terminal);

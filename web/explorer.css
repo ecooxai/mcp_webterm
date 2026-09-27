@@ -819,3 +819,57 @@
   max-width: calc(100% - 18px);
   box-sizing: border-box;
 }
+.workspace-group.is-active-workspace > .workspace-row {
+  background: #15263a;
+  box-shadow: inset 2px 0 0 #5aa9e6;
+  border-radius: 6px;
+}
+.workspace-group.is-active-workspace .workspace-name {
+  color: #e6f2ff;
+  font-weight: 600;
+}
+/* Quick preview floats beside the sidebar over the terminal; clicking elsewhere closes it. */
+.terminal-panel .file-mini-preview {
+  top: 55px;
+  left: 8px;
+  right: auto;
+  bottom: auto;
+  width: 500px;
+  max-width: calc(100% - 16px);
+  height: 60vh;
+  max-height: calc(100% - 63px);
+  z-index: 20;
+  border: 1px solid #2f4661;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 18px 48px #000a;
+}
+.terminal-panel .file-mini-preview[data-kind="image"],
+.terminal-panel .file-mini-preview[data-kind="video"] {
+  width: auto;
+  min-width: 320px;
+}
+.file-mini-preview[data-kind="image"] .preview-card-body,
+.file-mini-preview[data-kind="video"] .preview-card-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.file-mini-preview .file-image-preview,
+.file-mini-preview video.file-media-preview {
+  max-width: 100%;
+  max-height: calc(60vh - 220px);
+  width: auto;
+  object-fit: contain;
+}
+.preview-media-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 10px 0 0;
+  width: 100%;
+  font-size: 11px;
+  color: #a9bdd4;
+}
+.preview-media-facts dt { color: #71879f; }
+.preview-media-facts dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }

@@ -32,7 +32,7 @@ impl Default for Config {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("webterm");
         Self {
-            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7681),
+            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 10000),
             database_path: state_dir.join("webterm.db"),
             runtime_socket: state_dir.join("runtime.sock"),
             tmux_socket: state_dir.join("tmux.sock"),
@@ -85,9 +85,6 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if !self.listen.ip().is_loopback() {
-            bail!("listen address must be loopback; publish through an authenticated reverse proxy")
-        }
         if let Some(token) = &self.auth_token
             && token.len() < 24
         {
@@ -144,17 +141,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_bind_to_loopback() {
-        assert!(Config::default().listen.ip().is_loopback());
-    }
-
-    #[test]
-    fn rejects_public_bind() {
-        let config = Config {
-            listen: "0.0.0.0:7681".parse().unwrap(),
-            ..Config::default()
-        };
-        assert!(config.validate().is_err());
+    fn defaults_bind_to_all_interfaces() {
+        assert!(Config::default().listen.ip().is_unspecified());
+        assert_eq!(Config::default().listen.port(), 10000);
     }
 
     #[test]

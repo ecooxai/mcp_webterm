@@ -133,9 +133,9 @@ mod extension_tests {
     }
     #[tokio::test]
     async fn proxy_requires_auth_then_rejects_own_port_and_cross_origin() {
-        let response=app().oneshot(Request::builder().uri("/proxy/7681/").body(Body::empty()).unwrap()).await.unwrap();
+        let response=app().oneshot(Request::builder().uri("/proxy/10000/").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::UNAUTHORIZED);
-        let response=app().oneshot(Request::builder().uri("/proxy/7681/").header("authorization","Bearer proxy-test-token-is-long-enough").body(Body::empty()).unwrap()).await.unwrap();
+        let response=app().oneshot(Request::builder().uri("/proxy/10000/").header("authorization","Bearer proxy-test-token-is-long-enough").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(),StatusCode::FORBIDDEN);
         let response=app().oneshot(Request::builder().uri("/proxy/3000/").header("authorization","Bearer proxy-test-token-is-long-enough")
             .header("host","good.example").header("origin","https://bad.example").body(Body::empty()).unwrap()).await.unwrap();

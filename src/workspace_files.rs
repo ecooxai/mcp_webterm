@@ -180,7 +180,42 @@ pub fn preview(config: &Config, workspace: &str, path: &str) -> Result<Value> {
             result["text_limit"] = json!(TEXT_LIMIT);
         }
     }
+    if kind == "video" || kind == "audio" {
+        if let Some(media) = probe_media(&canonical) {
+            result["media"] = media;
+        }
+    }
     Ok(result)
+}
+
+/// Best-effort codec/resolution/bitrate via ffprobe when it is installed.
+fn probe_media(path: &std::path::Path) -> Option<Value> {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "--"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let probe: Value = serde_json::from_slice(&output.stdout).ok()?;
+    let streams = probe["streams"].as_array()?;
+    let stream = |kind: &str| streams.iter().find(|s| s["codec_type"] == kind);
+    let number = |v: &Value| v.as_str().and_then(|x| x.parse::<f64>().ok()).or_else(|| v.as_f64());
+    let video = stream("video");
+    let audio = stream("audio");
+    Some(json!({
+        "width": video.and_then(|v| v["width"].as_u64()),
+        "height": video.and_then(|v| v["height"].as_u64()),
+        "video_codec": video.and_then(|v| v["codec_name"].as_str()),
+        "audio_codec": audio.and_then(|v| v["codec_name"].as_str()),
+        "frame_rate": video.and_then(|v| v["avg_frame_rate"].as_str()),
+        "duration_s": number(&probe["format"]["duration"]),
+        "bit_rate": number(&probe["format"]["bit_rate"]),
+        "video_bit_rate": video.and_then(|v| number(&v["bit_rate"])),
+    }))
 }
 
 /// A single RFC 9110 byte range, including suffix and open-ended ranges.

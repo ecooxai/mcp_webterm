@@ -112,6 +112,92 @@ async fn explorer_resolve(
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
 }
+#[derive(Deserialize)]
+struct ToolsQuery {
+    workspace_id: String,
+    #[serde(default)]
+    path: String,
+}
+fn no_store(mut r: Response) -> Response {
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r
+}
+async fn workspace_activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ToolsQuery>,
+) -> Response {
+    if !explorer_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = state.config.clone();
+    let monitor = state.processes.clone();
+    let self_port = state.config.listen.port();
+    no_store(
+        api_task(
+            move || {
+                let db = Database::open_config(&config)?;
+                let workspace = db.workspace(&q.workspace_id)?;
+                let manager = TerminalManager::new(&config)?;
+                let shells = db
+                    .list_terminals(Some(workspace.id))?
+                    .into_iter()
+                    .filter(|t| t.backend() == "native-pty")
+                    .filter_map(|t| {
+                        let pid = manager.native().info(&t.tmux_session).ok()?.pid?;
+                        Some((t.id, t.name, pid))
+                    })
+                    .collect::<Vec<_>>();
+                let sample = monitor.snapshot()?;
+                let rows = sample["data"]["processes"].as_array().cloned().unwrap_or_default();
+                crate::workspace_tools::activity(&config, &workspace.id.to_string(), &shells, &rows, self_port)
+            },
+            StatusCode::OK,
+        )
+        .await,
+    )
+}
+async fn workspace_git_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ToolsQuery>,
+) -> Response {
+    if !explorer_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = state.config.clone();
+    no_store(
+        api_task(
+            move || crate::workspace_tools::git_status(&config, &q.workspace_id),
+            StatusCode::OK,
+        )
+        .await,
+    )
+}
+async fn workspace_git_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ToolsQuery>,
+) -> Response {
+    if !explorer_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = state.config.clone();
+    no_store(
+        api_task(
+            move || crate::workspace_tools::git_diff(&config, &q.workspace_id, &q.path),
+            StatusCode::OK,
+        )
+        .await,
+    )
+}
+async fn workspace_tools_js() -> Response {
+    html_response(
+        include_str!("../web/workspace-tools.js"),
+        "text/javascript; charset=utf-8",
+    )
+}
 async fn explorer_raw(
     State(state): State<AppState>,
     headers: HeaderMap,

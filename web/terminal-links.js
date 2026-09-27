@@ -282,5 +282,5 @@
     float.replaceChildren();
   }
 
-  window.WebTermLinks = { init, attach, hide, _test: { cleanPath, trimUrl, browserUrl } };
+  window.WebTermLinks = { init, attach, hide, IFRAME_ALLOW, _test: { cleanPath, trimUrl, browserUrl } };
 })();

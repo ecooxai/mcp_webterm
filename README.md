@@ -383,6 +383,9 @@ New read-only HTTP routes:
 - `GET /api/v1/files/preview?workspace_id=<id-or-path>&path=<file>`
 - `GET|HEAD /api/v1/files/raw/<workspace-id>/<relative-path>`
 - `GET /api/v1/files/resolve?workspace_id=<id-or-path>&terminal_id=<id>&text=<path-or-name>` — resolves text clicked in a terminal: exact paths relative to the terminal's foreground cwd or the workspace, else a bounded file-name search (cwd first, hidden and build directories skipped).
+- `GET /api/v1/workspace-activity?workspace_id=<id>` — processes started from the workspace's terminals or running with a cwd inside it, plus their proxyable listening ports (the workspace row's ▶ run panel; ports open in a Webview tab via `/proxy/<port>/`).
+- `GET /api/v1/git/status?workspace_id=<id>` — branch, upstream, ahead/behind and changed files limited to the workspace (the row's git panel).
+- `GET /api/v1/git/diff?workspace_id=<id>&path=<repo-relative-path>` — diff of one file against `HEAD` (untracked files as additions), capped at 1 MiB. Git runs without optional locks, fsmonitor, external diff or textconv drivers.
 - `GET /api/v1/tool-logs?q=&workspace=&task=&status=&sort=date&offset=0`
 - `GET /api/v1/tool-logs/<id>`
 

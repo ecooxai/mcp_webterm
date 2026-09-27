@@ -812,6 +812,7 @@
   }
   function showViewer() {
     if (!ctx) return;
+    window.WebTermTools?.hideWebview();
     viewerActive = true;
     viewer.hidden = false;
     ctx.elements.terminalPanel.classList.add("file-viewer-active");

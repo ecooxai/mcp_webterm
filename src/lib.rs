@@ -23,4 +23,5 @@ pub mod image_tool;
 pub mod subdomain_proxy;
 
 pub mod workspace_files;
+pub mod workspace_tools;
 pub mod audit;

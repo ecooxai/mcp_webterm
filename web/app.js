@@ -69,6 +69,8 @@
     elements.logoutButton.addEventListener("click", () => window.WebTermLog.open());
     window.WebTermExplorer.init({state,elements,request:apiFetch,renderNavigation,layout:() => requestAnimationFrame(fitActiveTerminal),toast:showToast});
     window.WebTermLinks.init({elements,request:apiFetch});
+    window.WebTermTools.init({elements,request:apiFetch,closeDrawer:closeMobileDrawer,restore:restoreTerminalView});
+    elements.workspaceList.addEventListener("contextmenu", handleWorkspaceMenu);
     window.WebTermLog.init({request:apiFetch,logout});
     for (const button of [elements.cpuMetric, elements.memoryMetric]) {
       button.addEventListener("click", () => { if (state.authenticated) window.WebTermMonitor.open({request:apiFetch, trigger:button}); });
@@ -234,6 +236,7 @@
   function clearAuthenticatedState() {
     window.WebTermMonitor?.close();
     window.WebTermExplorer?.clear();
+    window.WebTermTools?.clear();
     window.WebTermLog?.close();
     state.authenticated = false;
     stopMetricsPolling(true);
@@ -475,7 +478,7 @@
 
     if (state.activeId && !state.terminals.has(state.activeId)) deactivateTerminal();
     renderNavigation();
-    if (!state.activeId && !window.WebTermExplorer?.isViewerActive()) {
+    if (!state.activeId && !window.WebTermExplorer?.isViewerActive() && !window.WebTermTools?.isWebviewActive()) {
       const workspace = normalized.find((item) => item.id === state.activeWorkspaceId);
       const firstRunning = workspace?.terminals.find((terminal) => terminal.status === "running");
       if (firstRunning) selectTerminal(firstRunning.id);
@@ -540,6 +543,7 @@
     elements.terminalAddTab.hidden = !workspace || !can("terminal", "create");
     elements.terminalAddTab.setAttribute("aria-label", workspace ? `New terminal in ${workspace.name}` : "New terminal");
     window.WebTermExplorer?.updateTabs();
+    window.WebTermTools?.updateTabs();
   }
 
   function createTerminalTab(terminal, key) {
@@ -611,7 +615,7 @@
     const nameText=make("span","workspace-name"); const dot=make("span","workspace-new-dot");dot.hidden=true;dot.setAttribute("aria-label","New terminal"); name.append(nameText,dot);
     const count=make("span","workspace-count");
     const mode=actionButton("workspace-mode","","Show files or terminals"); mode.classList.add("workspace-mode-button");
-    const actions=make("div","workspace-actions");actions.append(actionButton("workspace-rename","✎","Rename workspace"),actionButton("workspace-delete","×","Delete workspace"));
+    const actions=make("div","workspace-actions");actions.append(toolButton("workspace-git","Git changes"),toolButton("workspace-run","Running processes and ports"));
     row.append(toggle,name,count,mode,actions);
     const path=make("div","workspace-full-path");path.hidden=true;const code=make("code","");const copy=actionButton("workspace-copy-path","⧉","Copy workspace path");path.append(code,copy);
     group.append(row,path,window.WebTermExplorer.pane());return group;
@@ -623,7 +627,7 @@
     const toggle=node.querySelector(".workspace-toggle");toggle.dataset.id=workspace.id;toggle.setAttribute("aria-expanded",String(expanded));toggle.setAttribute("aria-label",`${expanded?"Collapse":"Expand"} ${name}`);
     const nameButton=node.querySelector(".workspace-name-button");nameButton.dataset.id=workspace.id;nameButton.title=workspace.path;nameButton.setAttribute("aria-label",`Open ${name}`);
     node.classList.toggle("is-active-workspace",workspace.id===state.activeWorkspaceId);nameButton.setAttribute("aria-current",String(workspace.id===state.activeWorkspaceId));node.querySelector(".workspace-name").textContent=name;node.querySelector(".workspace-count").textContent=String(workspace.terminals.length);
-    for(const action of node.querySelectorAll(".workspace-action")){action.dataset.id=workspace.id;if(action.dataset.action==="workspace-rename")action.hidden=!can("workspace","rename");if(action.dataset.action==="workspace-delete")action.hidden=!can("workspace","delete");}
+    for(const action of node.querySelectorAll(".workspace-action"))action.dataset.id=workspace.id;
     patchKeyedList(node.querySelector(".terminal-list"),orderedTerminals(workspace.terminals),terminal=>terminal.id,createTerminalNode,updateTerminalNode);
     window.WebTermExplorer.updateWorkspace(node,workspace);
   }
@@ -677,6 +681,34 @@
     actions.hidden = !Array.from(actions.children).some((button) => !button.hidden);
   }
 
+  function toolButton(action, accessibleLabel) {
+    const button = actionButton(action, "", accessibleLabel);
+    button.classList.add("workspace-tool-button");
+    button.innerHTML = window.WebTermTools.icon(action);
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-expanded", "false");
+    return button;
+  }
+
+  // Rename and delete live in the row's context menu; the row buttons open git and run tools.
+  function handleWorkspaceMenu(event) {
+    const row = event.target.closest(".workspace-row");
+    const id = row?.closest(".workspace-group")?.dataset.id;
+    if (!id) return;
+    window.WebTermTools.showMenu(event, [
+      { label: "Rename workspace…", hidden: !can("workspace", "rename"), run: () => openDialog("workspace-rename", id, row.querySelector(".workspace-name-button")) },
+      { label: "Delete workspace…", danger: true, hidden: !can("workspace", "delete"), run: () => openDialog("workspace-delete", id, row.querySelector(".workspace-name-button")) },
+    ]);
+  }
+
+  function restoreTerminalView() {
+    if (state.activeId && state.terminals.has(state.activeId)) selectTerminal(state.activeId);
+    else {
+      elements.terminalEmpty.hidden = false;
+      renderTerminalTabs();
+    }
+  }
+
   function actionButton(action, label, accessibleLabel) {
     const button = make("button", "workspace-action", label);
     button.type = "button";
@@ -701,6 +733,11 @@
     if (action === "workspace-mode") { window.WebTermExplorer.toggleMode(id); return; }
     if (action === "workspace-path") { activateWorkspace(id); return; }
     if (action === "workspace-copy-path") { window.WebTermExplorer.copyPath(id); return; }
+    if (action === "workspace-git" || action === "workspace-run") {
+      const workspace = state.workspaces.find((item) => item.id === id);
+      if (workspace) window.WebTermTools.toggle(action, workspace, target);
+      return;
+    }
     if (action === "select-terminal") {
       selectTerminal(id);
       return;
@@ -796,6 +833,7 @@
     if (!terminal) return;
 
     window.WebTermExplorer?.hideViewer();
+    window.WebTermTools?.hideWebview();
     if (state.activeId !== terminal.id) window.WebTermLinks.hide();
     state.activeId = terminal.id;
     state.activeWorkspaceId = terminal.workspaceId;

@@ -475,14 +475,35 @@ fn print_terminal(terminal: &Terminal, json: bool) -> Result<()> {
 async fn serve(config: Config) -> Result<()> {
     config.ensure_state_dirs()?;
     webterm::db::ensure_default_workspace_folder(&config)?;
+
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("bind {}", config.listen))?;
-    info!(address = %config.listen, version = VERSION, "webterm listening");
-    axum::serve(listener, web::router(config)?)
-        .with_graceful_shutdown(shutdown_signal())
+    let proxy_addr = std::net::SocketAddr::from(([0, 0, 0, 0], webterm::generic_proxy::PROXY_PORT));
+    let proxy_listener = tokio::net::TcpListener::bind(proxy_addr)
         .await
-        .context("HTTP server")
+        .with_context(|| format!("bind URL proxy {proxy_addr}"))?;
+
+    info!(address = %config.listen, version = VERSION, "webterm listening");
+    info!(address = %proxy_addr, "webterm URL proxy listening");
+
+    let web_router = web::router(config)?;
+    let proxy_router = webterm::generic_proxy::router()?;
+
+    let web_task = tokio::spawn(async move { axum::serve(listener, web_router).await });
+    let proxy_task = tokio::spawn(async move { axum::serve(proxy_listener, proxy_router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await });
+
+    tokio::select! {
+        result = web_task => {
+            result.context("join WebTerm HTTP server")?
+                .context("HTTP server")
+        }
+        result = proxy_task => {
+            result.context("join URL proxy server")?
+                .context("URL proxy server")
+        }
+        _ = shutdown_signal() => Ok(()),
+    }
 }
 
 async fn shutdown_signal() {

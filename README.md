@@ -140,6 +140,143 @@ and the isolated live MCP workflow under `.agentwork/workspace-v2/`.
 Operators may set `WEBTERM_COMMAND_DIR` to an absolute private state folder. Colab
 sets `/build/webterm-commands` so command source/output stay outside persisted home.
 
+## General URL proxy on port 1080
+
+WebTerm includes a general URL reverse proxy and an authenticated HTTP/CONNECT
+forward proxy on **TCP port 1080**. It is part of the same webterm serve
+process; there is no separate proxy daemon to start.
+
+The reverse-preview side is intended for opening HTTP/HTTPS web applications in
+a normal browser without configuring a system proxy:
+
+- http://HOST:1080/ proxies the currently selected target.
+- http://HOST:1080/mpxx opens the target controller and iframe preview.
+- GET /pmurl returns the current target as JSON.
+- PUT /pmurl or POST /pmurl with {"url":"https://example.com/"} changes it.
+- Old /proxy/... browser URLs redirect to clean root-relative paths.
+- /mpxx provides Google, YouTube, Bing and Wikipedia shortcuts, a searchable
+  dropdown, and browser-local recent target history.
+- The compiled default target is https://www.google.com/.
+
+HTTP methods and streamed bodies are forwarded. WebSocket upgrades are tunneled
+bidirectionally. Same-origin redirects become clean local paths. A top-level
+navigation redirect to another origin updates the selected target so navigation
+can continue on the same port-1080 address. WebTerm control credentials and
+control cookies are never forwarded to the selected site.
+
+This is a **reverse preview, not an origin emulator**. The browser origin is
+still HOST:1080. Sites that bind CORS, cookies, OAuth, DRM, security checks, or
+CAPTCHA keys to their real origin can behave differently. If Google redirects a
+search to /sorry/..., WebTerm passes Google's actual verification response
+through instead of replacing it with a local help page. WebTerm does not rewrite
+Google CAPTCHA keys or bypass domain validation.
+
+Port 1080 can also act as an authenticated HTTP/CONNECT forward proxy. That mode
+preserves the destination site's original HTTPS origin because TLS is end-to-end
+through the CONNECT tunnel. It is optional; the /mpxx reverse-preview workflow
+does not require it. CONNECT is restricted to safe web ports and rejects
+loopback/private/metadata destinations. The credential comes from
+WEBTERM_FORWARD_PROXY_TOKEN_FILE and is never exposed by /mpxx or the PAC file.
+See docs/URL_PROXY.md for protocol and security details.
+
+### Build and install the proxy-enabled WebTerm
+
+Build the release binary and keep the generated artifact in dist/:
+
+    cd /home/admin/project/webterm
+    cargo test --locked
+    cargo build --release
+    mkdir -p dist
+    cp target/release/webterm dist/webterm
+    sudo install -m 0755 dist/webterm /usr/local/bin/webterm
+
+dist/ is generated output and should not be committed.
+
+The normal WebTerm config still controls the main/control listener. Example:
+
+    # /etc/webterm/webterm.toml
+    listen = "127.0.0.1:7681"
+    database_path = "/var/lib/webterm/webterm.db"
+    runtime_socket = "/var/lib/webterm/runtime.sock"
+    tmux_socket = "/var/lib/webterm/tmux.sock"
+    workspace_roots = ["/home/admin/project"]
+    auth_token_file = "/etc/webterm/token"
+
+When webterm serve starts, it also binds the URL proxy to 0.0.0.0:1080. Permit
+port 1080 in the host firewall/security group only for networks that should use
+it.
+
+### Deploy it as a systemd service
+
+The URL proxy runs inside the normal webterm.service. A minimal unit is:
+
+    # /etc/systemd/system/webterm.service
+    [Unit]
+    Description=Webterm persistent terminal manager
+    Requires=webterm-runtime.service
+    After=network.target webterm-runtime.service
+
+    [Service]
+    Type=simple
+    User=admin
+    Group=admin
+    ExecStart=/usr/local/bin/webterm --config /etc/webterm/webterm.toml serve
+    Restart=on-failure
+    RestartSec=2s
+    KillSignal=SIGTERM
+    TimeoutStopSec=15s
+    UMask=0077
+
+    [Install]
+    WantedBy=multi-user.target
+
+For optional authenticated HTTP/CONNECT mode, create a separate random token and
+make it readable only by the service user:
+
+    sudo install -d -m 0755 /etc/webterm
+    openssl rand -hex 32 | sudo tee /etc/webterm/forward-proxy.token >/dev/null
+    sudo chown admin:admin /etc/webterm/forward-proxy.token
+    sudo chmod 0600 /etc/webterm/forward-proxy.token
+
+Then add a systemd drop-in:
+
+    # /etc/systemd/system/webterm.service.d/45-url-forward-proxy.conf
+    [Service]
+    Environment=WEBTERM_FORWARD_PROXY_TOKEN_FILE=/etc/webterm/forward-proxy.token
+
+Reload and restart:
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now webterm.service
+    sudo systemctl restart webterm.service
+    systemctl is-active webterm.service
+    curl -fsS http://127.0.0.1:1080/pmurl
+
+A default installation returns JSON similar to:
+
+    {"url":"https://www.google.com/"}
+
+For production, keep the existing WebTerm systemd hardening directives and use a
+protected browser password hash instead of putting a development password on the
+command line. If port 1080 is reachable beyond a trusted network, put transport
+encryption or a trusted VPN/SSH tunnel in front of it; Basic proxy authentication
+is not encrypted on a plaintext HTTP connection.
+
+### Proxy regression checks
+
+The normal Rust suite plus isolated integration tests cover the proxy:
+
+    cargo test --locked
+
+    PROXY_TEST_PORT=11080 \
+    TOKEN_FILE=/path/to/test-forward-proxy.token \
+    python3 tests/url_proxy_integration.py
+
+The integration suite checks redirects, clean URLs, cookies, WebSockets, CONNECT
+authentication/restrictions, and verification-path pass-through. Chrome routing
+checks are in tests/url_proxy_browser_routing.cjs and original-origin browser
+coverage is in tests/url_proxy_chrome_native.cjs.
+
 ## Runtime port proxy and task manager
 
 `/path?proxyport=3000&x=1&x=2` forwards the unchanged escaped path and query to

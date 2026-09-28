@@ -28,7 +28,9 @@ uuid = { version = "1.18", features = ["v4"] }
 vt100 = "=0.16.2"
 
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "client", "client-legacy", "http1"] }
+hyper-rustls = "0.27"
+url = "2.5"
 
 tokio-util = { version = "0.7", features = ["io"] }
 

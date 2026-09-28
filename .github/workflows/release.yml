@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          install -m 0755 target/release/webterm release/webterm-linux-x86_64
+          (cd release && sha256sum webterm-linux-x86_64 > SHA256SUMS)
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            release/webterm-linux-x86_64 \
+            release/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "WebTerm ${GITHUB_REF_NAME}" \
+            --generate-notes

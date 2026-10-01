@@ -21,23 +21,14 @@ async fn query_port_dispatch(State(state): State<AppState>, mut request: Request
     let selected=match crate::query_proxy::selected(request.uri(),request.headers()) {
         Ok(p)=>p,Err(e)=>return (StatusCode::BAD_REQUEST,e).into_response(),
     };
-    let secure=request.headers().get("x-forwarded-proto").is_some_and(|v|v=="https");
-    let explicit=crate::query_proxy::split_query(request.uri().query()).ok().and_then(|v|v.0).is_some();
-    let websocket=request.headers().get("upgrade").is_some_and(|v|v=="websocket");
     if let Some(port) = selected {
         if port==0 {
             if let Ok(path)=crate::query_proxy::upstream(request.uri()) {if let Ok(uri)=path.parse(){*request.uri_mut()=uri;}}
-            let mut response=next.run(request).await;
-            if explicit && !websocket {response.headers_mut().append(header::SET_COOKIE,HeaderValue::from_str(&crate::query_proxy::cookie(0,secure)).unwrap());}
-            return response;
+            return next.run(request).await;
         }
         let path=match crate::query_proxy::upstream(request.uri()){Ok(p)=>p,Err(e)=>return (StatusCode::BAD_REQUEST,e).into_response()};
         request.extensions_mut().insert(crate::query_proxy::Target {port,path});
-        let mut response=browser_port_proxy(State(state),request).await;
-        if response.headers().contains_key("x-webterm-proxy") {
-            response.headers_mut().append(header::SET_COOKIE,HeaderValue::from_str(&crate::query_proxy::cookie(port,secure)).unwrap());
-        }
-        return response;
+        return browser_port_proxy(State(state),request).await;
     }
     next.run(request).await
 }

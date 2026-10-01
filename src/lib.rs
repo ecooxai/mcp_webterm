@@ -29,3 +29,9 @@ pub mod workspace_tools;
 pub mod generic_proxy;
 
 pub mod forward_proxy;
+
+pub mod webterm_cmd;
+
+pub mod shell_tool;
+
+pub mod call_context;

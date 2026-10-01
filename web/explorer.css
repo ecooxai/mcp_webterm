@@ -35,6 +35,8 @@
   border: 0;
   text-align: left;
   cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
   font: inherit;
   font-size: 13px;
   font-weight: 600;

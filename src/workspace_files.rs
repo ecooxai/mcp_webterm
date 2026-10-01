@@ -210,7 +210,15 @@ pub fn foreground_cwd(pid: u32) -> Option<PathBuf> {
 const RESOLVE_LIMIT: usize = 50;
 const SEARCH_ENTRY_LIMIT: usize = 200_000;
 const SEARCH_TIME_LIMIT: std::time::Duration = std::time::Duration::from_millis(1500);
-const SEARCH_SKIP: [&str; 7] = [".git", "node_modules", "target", ".venv", "__pycache__", ".cache", ".npm"];
+const SEARCH_SKIP: [&str; 7] = [
+    ".git",
+    "node_modules",
+    "target",
+    ".venv",
+    "__pycache__",
+    ".cache",
+    ".npm",
+];
 
 /// Resolve text clicked in a terminal to workspace files. Exact paths are tried
 /// relative to the terminal's cwd and the workspace; otherwise the workspace is
@@ -225,7 +233,11 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
     let roots = db
         .list_workspaces()?
         .into_iter()
-        .filter_map(|w| canonical_workspace_path(config, &w.path).ok().map(|root| (w.id, root)))
+        .filter_map(|w| {
+            canonical_workspace_path(config, &w.path)
+                .ok()
+                .map(|root| (w.id, root))
+        })
         .collect::<Vec<_>>();
     let root = root(config, workspace)?;
     let owner = |path: &Path| {
@@ -251,8 +263,12 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
         }
     }
     for candidate in candidates {
-        let Ok(canonical) = candidate.canonicalize() else { continue };
-        let Some((id, owner_root)) = owner(&canonical) else { continue };
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        let Some((id, owner_root)) = owner(&canonical) else {
+            continue;
+        };
         if let Some(entry) = resolved_entry(id, &owner_root, &canonical, true) {
             return Ok(json!({"query":text,"exact":true,"matches":[entry],"truncated":false}));
         }
@@ -271,7 +287,9 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
     };
     let suffix = segments.iter().collect::<PathBuf>();
     // Hidden trees (.cargo, .local, .rustup...) dominate home workspaces; enter them only when asked.
-    let hidden_query = segments.iter().any(|s| s.to_string_lossy().starts_with('.'));
+    let hidden_query = segments
+        .iter()
+        .any(|s| s.to_string_lossy().starts_with('.'));
     // The shell's cwd is searched first so nearby files rank above the rest of the workspace.
     let mut starts = Vec::new();
     if let Some(cwd) = cwd.and_then(|c| c.canonicalize().ok()) {
@@ -292,7 +310,9 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
             if !seen_dirs.insert(dir.clone()) {
                 continue;
             }
-            let Ok(items) = fs::read_dir(&dir) else { continue };
+            let Ok(items) = fs::read_dir(&dir) else {
+                continue;
+            };
             let mut children = Vec::new();
             for item in items.flatten() {
                 visited += 1;
@@ -300,11 +320,15 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
                     truncated = true;
                     break 'walk;
                 }
-                let Ok(file_type) = item.file_type() else { continue };
+                let Ok(file_type) = item.file_type() else {
+                    continue;
+                };
                 let file_name = item.file_name();
                 if file_type.is_dir() {
                     let hidden = file_name.to_string_lossy().starts_with('.');
-                    if !SEARCH_SKIP.iter().any(|skip| file_name == *skip) && (hidden_query || !hidden) {
+                    if !SEARCH_SKIP.iter().any(|skip| file_name == *skip)
+                        && (hidden_query || !hidden)
+                    {
                         children.push(item.path());
                     }
                     continue;
@@ -316,11 +340,18 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
                 if !path.ends_with(&suffix) {
                     continue;
                 }
-                let Ok(canonical) = path.canonicalize() else { continue };
-                if matches.iter().any(|m: &Value| m["path"] == json!(canonical)) {
+                let Ok(canonical) = path.canonicalize() else {
+                    continue;
+                };
+                if matches
+                    .iter()
+                    .any(|m: &Value| m["path"] == json!(canonical))
+                {
                     continue;
                 }
-                let Some((id, owner_root)) = owner(&canonical) else { continue };
+                let Some((id, owner_root)) = owner(&canonical) else {
+                    continue;
+                };
                 if let Some(entry) = resolved_entry(id, &owner_root, &canonical, false) {
                     matches.push(entry);
                     if matches.len() >= RESOLVE_LIMIT {
@@ -336,7 +367,12 @@ pub fn resolve(config: &Config, workspace: &str, cwd: Option<&Path>, text: &str)
     Ok(json!({"query":text,"exact":false,"matches":matches,"truncated":truncated}))
 }
 
-fn resolved_entry(workspace_id: i64, root: &Path, canonical: &Path, allow_dir: bool) -> Option<Value> {
+fn resolved_entry(
+    workspace_id: i64,
+    root: &Path,
+    canonical: &Path,
+    allow_dir: bool,
+) -> Option<Value> {
     let relative = canonical.strip_prefix(root).ok()?;
     let meta = fs::metadata(canonical).ok()?;
     if !(meta.is_file() || (allow_dir && meta.is_dir())) {
@@ -360,7 +396,15 @@ fn resolved_entry(workspace_id: i64, root: &Path, canonical: &Path, allow_dir: b
 /// Best-effort codec/resolution/bitrate via ffprobe when it is installed.
 fn probe_media(path: &std::path::Path) -> Option<Value> {
     let output = std::process::Command::new("ffprobe")
-        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "--"])
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            "--",
+        ])
         .arg(path)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -372,7 +416,11 @@ fn probe_media(path: &std::path::Path) -> Option<Value> {
     let probe: Value = serde_json::from_slice(&output.stdout).ok()?;
     let streams = probe["streams"].as_array()?;
     let stream = |kind: &str| streams.iter().find(|s| s["codec_type"] == kind);
-    let number = |v: &Value| v.as_str().and_then(|x| x.parse::<f64>().ok()).or_else(|| v.as_f64());
+    let number = |v: &Value| {
+        v.as_str()
+            .and_then(|x| x.parse::<f64>().ok())
+            .or_else(|| v.as_f64())
+    };
     let video = stream("video");
     let audio = stream("audio");
     Some(json!({
@@ -478,8 +526,18 @@ mod tests {
         assert_eq!(searched["matches"].as_array().unwrap().len(), 1);
         let suffix = resolve(&c, &w, None, "other/deep/main.rs").unwrap();
         assert!(suffix["matches"].as_array().unwrap().is_empty());
-        assert!(resolve(&c, &w, None, "missing.txt").unwrap()["matches"].as_array().unwrap().is_empty());
-        assert!(resolve(&c, &w, None, "/etc/passwd").unwrap()["matches"].as_array().unwrap().is_empty());
+        assert!(
+            resolve(&c, &w, None, "missing.txt").unwrap()["matches"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            resolve(&c, &w, None, "/etc/passwd").unwrap()["matches"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
     #[test]
     fn ranges() {

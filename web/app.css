@@ -372,7 +372,7 @@ input:hover { border-color: #4a596e; }
 
 .workspace-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto auto;
   align-items: center;
   border-radius: 9px;
 }
@@ -623,6 +623,34 @@ input:hover { border-color: #4a596e; }
 .xterm .xterm-viewport { overscroll-behavior: contain; scrollbar-color: #3e4959 #090c12; }
 .xterm .xterm-screen,
 .xterm.enable-mouse-events .xterm-screen { cursor: text; touch-action: pan-y; }
+
+.terminal-surface.touch-selection-active .xterm-screen { touch-action: none; }
+.touch-selection-toolbar {
+  position: absolute;
+  z-index: 19;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(126, 231, 210, .42);
+  border-radius: 999px;
+  background: rgba(15, 23, 34, .97);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .42);
+  transform: translate(-50%, -100%);
+  touch-action: manipulation;
+}
+.touch-selection-toolbar[hidden] { display: none; }
+.touch-selection-action {
+  min-width: 58px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #e3edf8;
+  font: 700 12px/1 system-ui, sans-serif;
+}
+.touch-selection-action:active,
+.touch-selection-action:focus-visible { background: #203247; color: #a7f3d0; outline: none; }
 
 .new-output-button {
   position: absolute;

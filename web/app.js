@@ -25,6 +25,7 @@
     workspaces: [],
     terminals: new Map(),
     expanded: new Set(),
+    workspaceClick: null,
     sessions: new Map(),
     activeId: null,
     activeWorkspaceId: null,
@@ -81,6 +82,7 @@
     elements.refreshButton.addEventListener("click", () => refreshWorkspaces(true));
     elements.workspaceCreate.addEventListener("click", (event) => openDialog("workspace-create", null, event.currentTarget));
     elements.workspaceList.addEventListener("click", handleNavigationClick);
+    elements.workspaceList.addEventListener("dblclick", handleNavigationDoubleClick);
     elements.terminalTabs.addEventListener("click", (event) => {
       const tab = event.target.closest("[data-terminal-id]");
       if (tab) selectTerminal(tab.dataset.terminalId);
@@ -104,6 +106,7 @@
       closeDialog();
     });
 
+    window.addEventListener("webterm-signed-out", () => { clearAuthenticatedState(); showLogin(); });
     window.addEventListener("online", recoverForeground);
     window.addEventListener("offline", updateConnectionStatus);
     document.addEventListener("visibilitychange", () => {
@@ -129,27 +132,13 @@
       return;
     }
 
-    state.csrf = document.querySelector('meta[name="csrf-token"]')?.content || "";
     try {
-      const response = await fetch(`${API_ROOT}/session`, {
-        credentials: "same-origin",
-        headers: { Accept: "application/json", "X-WebTerm-Control": "1" },
-        cache: "no-store",
-      });
-      if (response.status === 401) {
-        showLogin();
-        return;
-      }
-      if (!response.ok) throw await responseError(response);
-      const body = await readJson(response);
-      rememberSecurityContext(response, body);
-      if (body.authenticated === false) {
-        showLogin();
-        return;
-      }
+      const body = await window.WebTermAuth.getSession();
+      rememberSecurityContext(new Response(), body);
+      await window.WebTermAuth.ensureWorker();
       enterApp(body);
     } catch (error) {
-      showLogin(friendlyError(error, "Unable to reach webterm."));
+      showLogin(error.status === 401 ? "" : (error.message || "Unable to reach WebTerm."));
     }
   }
 
@@ -164,19 +153,11 @@
     }
 
     setButtonBusy(elements.loginSubmit, true, "Signing in…");
-    const requestBody = JSON.stringify({ password: value });
     elements.password.value = "";
-
     try {
-      const response = await fetch(`${API_ROOT}/login`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json", Accept: "application/json", "X-WebTerm-Control": "1" },
-        body: requestBody,
-      });
-      const body = await readJson(response);
-      if (!response.ok) throw responseErrorFromBody(response, body);
-      rememberSecurityContext(response, body);
+      const body = await window.WebTermAuth.login(value);
+      rememberSecurityContext(new Response(), body);
+      await window.WebTermAuth.ensureWorker();
       enterApp(body);
     } catch (error) {
       elements.loginError.textContent = friendlyError(error, "Sign-in failed. Try again.");
@@ -197,7 +178,7 @@
   async function logout() {
     elements.logoutButton.disabled = true;
     try {
-      await apiFetch("/logout", { method: "POST" }, true);
+      await window.WebTermAuth.logout();
     } catch (error) {
       if (error.status !== 401) showToast(friendlyError(error, "Could not sign out cleanly."));
     } finally {
@@ -625,7 +606,7 @@
     node.dataset.id=workspace.id;const expanded=state.expanded.has(workspace.id);node.classList.toggle("is-expanded",expanded);
     const name=window.WebTermExplorer.basename(workspace.path||workspace.name);
     const toggle=node.querySelector(".workspace-toggle");toggle.dataset.id=workspace.id;toggle.setAttribute("aria-expanded",String(expanded));toggle.setAttribute("aria-label",`${expanded?"Collapse":"Expand"} ${name}`);
-    const nameButton=node.querySelector(".workspace-name-button");nameButton.dataset.id=workspace.id;nameButton.title=workspace.path;nameButton.setAttribute("aria-label",`Open ${name}`);
+    const nameButton=node.querySelector(".workspace-name-button");nameButton.dataset.id=workspace.id;nameButton.title=workspace.path+" · click to "+(expanded?"collapse":"expand")+" · double-click or triple-click to open";nameButton.setAttribute("aria-label",(expanded?"Collapse ":"Expand ")+name+"; double-click or triple-click to open workspace");
     node.classList.toggle("is-active-workspace",workspace.id===state.activeWorkspaceId);nameButton.setAttribute("aria-current",String(workspace.id===state.activeWorkspaceId));node.querySelector(".workspace-name").textContent=name;node.querySelector(".workspace-count").textContent=String(workspace.terminals.length);
     for(const action of node.querySelectorAll(".workspace-action"))action.dataset.id=workspace.id;
     patchKeyedList(node.querySelector(".terminal-list"),orderedTerminals(workspace.terminals),terminal=>terminal.id,createTerminalNode,updateTerminalNode);
@@ -724,14 +705,14 @@
     const action = target.dataset.action;
     const id = target.dataset.id;
     if (action === "toggle-workspace") {
-      state.activeWorkspaceId = id;
-      if (state.expanded.has(id)) state.expanded.delete(id);
-      else state.expanded.add(id);
-      renderNavigation();
+      toggleWorkspaceExpanded(id);
       return;
     }
     if (action === "workspace-mode") { window.WebTermExplorer.toggleMode(id); return; }
-    if (action === "workspace-path") { activateWorkspace(id); return; }
+    if (action === "workspace-path") {
+      handleWorkspaceNameClick(id, event);
+      return;
+    }
     if (action === "workspace-copy-path") { window.WebTermExplorer.copyPath(id); return; }
     if (action === "workspace-git" || action === "workspace-run") {
       const workspace = state.workspaces.find((item) => item.id === id);
@@ -749,6 +730,48 @@
     openDialog(action, id, target);
   }
 
+  // Single click changes only the tree. Rapid double/triple taps activate once.
+  // Keep gesture state outside DOM rows so refreshes cannot lose tap counts.
+  function handleWorkspaceNameClick(id, event) {
+    const now = performance.now();
+    const previous = state.workspaceClick;
+    const same = previous && previous.id === id && now - previous.lastAt <= 600 && now - previous.firstAt <= 1200;
+    const count = same ? previous.count + 1 : 1;
+    const gesture = { id, count, firstAt: same ? previous.firstAt : now, lastAt: now, activated: same && previous.activated };
+    state.workspaceClick = gesture;
+    if (gesture.activated) return; // Third click must not collapse a just-opened workspace.
+    const rapidDouble = count === 2 && now - previous.lastAt <= 320;
+    if (event.detail > 0 && (rapidDouble || count >= 3)) {
+      gesture.activated = true;
+      activateWorkspace(id);
+      return;
+    }
+    // Enter/Space activation of the button is also expansion-only.
+    if (event.detail === 0) state.workspaceClick = null;
+    toggleWorkspaceExpanded(id);
+  }
+
+  function toggleWorkspaceExpanded(id) {
+    const workspace = state.workspaces.find((item) => item.id === String(id));
+    if (!workspace) return;
+    if (state.expanded.has(workspace.id)) state.expanded.delete(workspace.id);
+    else state.expanded.add(workspace.id);
+    renderNavigation();
+  }
+
+  function handleNavigationDoubleClick(event) {
+    const target = event.target.closest(".workspace-name-button");
+    if (!target || !elements.workspaceList.contains(target)) return;
+    const id = target.dataset.id;
+    if (!id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.workspaceClick?.id === id && state.workspaceClick.activated) return;
+    const now = performance.now();
+    state.workspaceClick = { id, count: 2, firstAt: now, lastAt: now, activated: true };
+    activateWorkspace(id);
+  }
+
   function activateWorkspace(id) {
     const workspace = state.workspaces.find((item) => item.id === String(id));
     if (!workspace) return;
@@ -757,6 +780,8 @@
     const last = workspace.terminals.find((terminal) => terminal.id === lastId);
     if (last) selectTerminal(last.id);
     else enterWorkspace(workspace.id);
+    // Reflect activation immediately even while a terminal is being created.
+    renderNavigation();
   }
 
   function rememberTerminal(terminal) {
@@ -1019,7 +1044,7 @@
     return !control.appMode;
   }
 
-  function setApplicationMouseMode(session, enabled) {
+  function setApplicationMouseMode(session, enabled, restoreFocus = true) {
     if (!session || session.mouseControl.appMode === enabled || session.mouseControl.replaying) return;
     const control = session.mouseControl;
     const modes = Array.from(control.requested).sort((left, right) => left - right);
@@ -1035,7 +1060,7 @@
       control.replaying = false;
       control.appMode = enabled;
       updateMouseModeButton();
-      focusTerminal(session);
+      if (restoreFocus) focusTerminal(session);
     });
   }
 
@@ -1055,34 +1080,67 @@
     let selecting = false;
     let start = null;
     let origin = null;
+    let restoreAppMode = false;
 
-    const stopTimer = () => {
-      clearTimeout(timer);
-      timer = 0;
+    const toolbar = make("div", "touch-selection-toolbar");
+    toolbar.hidden = true;
+    toolbar.setAttribute("role", "toolbar");
+    toolbar.setAttribute("aria-label", "Text selection actions");
+    const copy = make("button", "touch-selection-action", "Copy");
+    copy.type = "button";
+    const clear = make("button", "touch-selection-action", "Clear");
+    clear.type = "button";
+    toolbar.append(copy, clear);
+    session.surface.append(toolbar);
+
+    const stopTimer = () => { clearTimeout(timer); timer = 0; };
+    const hideToolbar = () => {
+      toolbar.hidden = true;
+      session.surface.classList.remove("touch-selection-active");
+    };
+    const showToolbar = (event) => {
+      const rect = session.surface.getBoundingClientRect();
+      const x = Math.max(70, Math.min(rect.width - 70, event.clientX - rect.left));
+      const y = Math.max(62, Math.min(rect.height - 16, event.clientY - rect.top - 14));
+      toolbar.style.left = x + "px";
+      toolbar.style.top = y + "px";
+      toolbar.hidden = false;
+      session.surface.classList.add("touch-selection-active");
+    };
+    const restoreMouseMode = () => {
+      if (!restoreAppMode) return;
+      restoreAppMode = false;
+      window.setTimeout(() => setApplicationMouseMode(session, true, false), 0);
     };
     const pointerDown = (event) => {
-      if (event.pointerType !== "touch" || event.isPrimary === false || session.mouseControl.appMode) return;
+      if (event.pointerType !== "touch" || event.isPrimary === false || toolbar.contains(event.target)) return;
       stopTimer();
       selecting = false;
+      restoreMouseMode();
+      if (session.term.hasSelection()) session.term.clearSelection();
+      hideToolbar();
       start = terminalCellFromPointer(session, event);
       origin = { x: event.clientX, y: event.clientY };
       timer = window.setTimeout(() => {
         if (!start) return;
         selecting = true;
+        restoreAppMode = session.mouseControl.appMode;
+        if (restoreAppMode) setApplicationMouseMode(session, false, false);
         session.term.select(start.column, start.row, 1);
+        showToolbar(event);
         screen.setPointerCapture?.(event.pointerId);
-      }, 450);
+      }, 350);
     };
     const pointerMove = (event) => {
-      if (event.pointerType !== "touch" || !start || session.mouseControl.appMode) return;
+      if (event.pointerType !== "touch" || !start) return;
       if (!selecting) {
-        if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 8) {
-          stopTimer();
-          start = null;
+        if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 9) {
+          stopTimer(); start = null;
         }
         return;
       }
       event.preventDefault();
+      event.stopPropagation();
       const end = terminalCellFromPointer(session, event);
       if (!end) return;
       const startOffset = start.row * session.term.cols + start.column;
@@ -1090,24 +1148,40 @@
       const first = Math.min(startOffset, endOffset);
       const last = Math.max(startOffset, endOffset);
       session.term.select(first % session.term.cols, Math.floor(first / session.term.cols), last - first + 1);
+      showToolbar(event);
     };
     const pointerUp = (event) => {
       if (event.pointerType !== "touch") return;
+      const wasSelecting = selecting;
       stopTimer();
-      selecting = false;
-      start = null;
-      origin = null;
+      if (wasSelecting) {
+        event.preventDefault();
+        event.stopPropagation();
+        showToolbar(event);
+      }
+      selecting = false; start = null; origin = null; restoreMouseMode();
     };
-    screen.addEventListener("pointerdown", pointerDown);
-    screen.addEventListener("pointermove", pointerMove, { passive: false });
-    screen.addEventListener("pointerup", pointerUp);
-    screen.addEventListener("pointercancel", pointerUp);
+    const selectionChange = session.term.onSelectionChange(() => {
+      if (!session.term.hasSelection() && !selecting) hideToolbar();
+    });
+    copy.addEventListener("pointerdown", (event) => event.stopPropagation());
+    clear.addEventListener("pointerdown", (event) => event.stopPropagation());
+    copy.addEventListener("click", async (event) => {
+      event.preventDefault(); event.stopPropagation(); await copySelection(session);
+    });
+    clear.addEventListener("click", (event) => {
+      event.preventDefault(); event.stopPropagation(); session.term.clearSelection(); hideToolbar();
+    });
+    screen.addEventListener("pointerdown", pointerDown, true);
+    screen.addEventListener("pointermove", pointerMove, { passive: false, capture: true });
+    screen.addEventListener("pointerup", pointerUp, true);
+    screen.addEventListener("pointercancel", pointerUp, true);
     return () => {
-      stopTimer();
-      screen.removeEventListener("pointerdown", pointerDown);
-      screen.removeEventListener("pointermove", pointerMove);
-      screen.removeEventListener("pointerup", pointerUp);
-      screen.removeEventListener("pointercancel", pointerUp);
+      stopTimer(); restoreMouseMode(); selectionChange.dispose(); toolbar.remove();
+      screen.removeEventListener("pointerdown", pointerDown, true);
+      screen.removeEventListener("pointermove", pointerMove, true);
+      screen.removeEventListener("pointerup", pointerUp, true);
+      screen.removeEventListener("pointercancel", pointerUp, true);
     };
   }
 
@@ -1121,7 +1195,7 @@
     return { column, row: session.term.buffer.active.viewportY + viewportRow };
   }
 
-  function connectSession(session) {
+  async function connectSession(session) {
     if (session.terminal.status !== "running") {
       markSessionStopped(session);
       return;
@@ -1134,9 +1208,16 @@
       return;
     }
 
+    if (session.authConnecting) return;
+    session.authConnecting = true;
+    let auth;
+    try { auth = await window.WebTermAuth.getSession(); }
+    catch (_) { session.authConnecting=false; scheduleReconnect(session); return; }
+    session.authConnecting = false;
+    if (!session.desired || !state.authenticated) return;
     clearTimeout(session.reconnectTimer);
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${location.host}${API_ROOT}/terminals/${encodeURIComponent(session.id)}/ws?proxyport=0`);
+    const socket = new WebSocket(`${protocol}//${location.host}${API_ROOT}/terminals/${encodeURIComponent(session.id)}/ws?proxyport=0`, ["webterm", "webterm.auth." + auth.session_token]);
     const generation = ++session.generation;
     session.messageChain = Promise.resolve();
     session.socket = socket;
@@ -1188,7 +1269,7 @@
 
   async function verifySessionAfterAuthClose() {
     try {
-      const response = await fetch(`${API_ROOT}/session`, { credentials: "same-origin", cache: "no-store" });
+      const response = await window.WebTermAuth.request(`${API_ROOT}/session`);
       if (response.status === 401) {
         clearAuthenticatedState();
         showLogin("Your session expired. Sign in again.");
@@ -2040,12 +2121,12 @@
     const method = String(options.method || "GET").toUpperCase();
     if (!["GET", "HEAD", "OPTIONS"].includes(method) && state.csrf) headers.set("X-CSRF-Token", state.csrf);
 
-    const response = await fetch(`${API_ROOT}${path}`, {
+    const response = await window.WebTermAuth.request(`${API_ROOT}${path}`, {
       ...options,
       method,
       headers,
       body,
-      credentials: "same-origin",
+      credentials: "omit",
       cache: "no-store",
     });
     const bodyValue = await readJson(response);

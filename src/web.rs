@@ -37,7 +37,7 @@ use crate::{
     terminal::TerminalManager,
 };
 
-const SESSION_COOKIE: &str = "__Host-webterm_session";
+const SESSION_HEADER: &str = "x-webterm-session";
 const LOGIN_WINDOW: Duration = Duration::from_secs(60);
 const LOGIN_LIMIT_PER_CLIENT: usize = 5;
 const LOGIN_LIMIT_GLOBAL: usize = 50;
@@ -128,6 +128,9 @@ fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration
         .route("/api/v1/tool-logs", get(browser_tool_logs))
         .route("/api/v1/tool-logs/{id}", get(browser_tool_log_detail))
         .route("/assets/app.js", get(app_js))
+        .route("/assets/login.js", get(login_js))
+        .route("/assets/auth.js", get(auth_js))
+        .route("/webterm-auth-sw.js", get(auth_worker))
         .route("/assets/app.css", get(app_css))
         .route("/assets/process-monitor.js", get(monitor_js))
         .route("/assets/process-monitor.css", get(monitor_css))
@@ -181,6 +184,8 @@ fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration
 }
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
+const LOGIN_HTML: &str = include_str!("../web/login.html");
+const LOGIN_JS: &str = include_str!("../web/login.js");
 const APP_CSS: &str = include_str!("../web/app.css");
 const APP_JS: &str = include_str!("../web/app.js");
 const XTERM_CSS: &str = include_str!("../web/vendor/xterm-5.5.0.css");
@@ -189,33 +194,40 @@ const FIT_JS: &str = include_str!("../web/vendor/addon-fit-0.10.0.js");
 
 #[derive(Default, Deserialize)]
 struct IndexQuery {
-    passwd: Option<String>,
+    app: Option<u8>,
 }
 
-async fn index(
-    State(state): State<AppState>,
-    Query(query): Query<IndexQuery>,
-    headers: HeaderMap,
-) -> Response {
-    let Some(password) = query.passwd else {
-        return html_response(INDEX_HTML, "text/html; charset=utf-8");
-    };
+async fn index(Query(query): Query<IndexQuery>) -> Response {
+    // Templates contain no private data. API and file authorization are unchanged.
+    html_response(
+        if query.app == Some(1) {
+            INDEX_HTML
+        } else {
+            LOGIN_HTML
+        },
+        "text/html; charset=utf-8",
+    )
+}
 
-    if let Some(response) = verify_browser_password(&state, &headers, password).await {
-        return response;
-    }
-
-    let (session_id, _) = create_browser_session(&state);
-    let mut response = StatusCode::SEE_OTHER.into_response();
+async fn auth_js() -> Response {
+    html_response(
+        include_str!("../web/auth.js"),
+        "text/javascript; charset=utf-8",
+    )
+}
+async fn auth_worker() -> Response {
+    let mut response = html_response(
+        include_str!("../web/auth-sw.js"),
+        "text/javascript; charset=utf-8",
+    );
     response
         .headers_mut()
-        .insert(header::LOCATION, HeaderValue::from_static("/"));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
-    );
-    set_browser_session_cookie(&state, &session_id, &mut response);
+        .insert("service-worker-allowed", HeaderValue::from_static("/"));
     response
+}
+
+async fn login_js() -> Response {
+    html_response(LOGIN_JS, "text/javascript; charset=utf-8")
 }
 
 async fn app_js() -> Response {
@@ -240,6 +252,9 @@ fn html_response(body: &'static str, content_type: &'static str) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response.headers_mut().insert("content-security-policy",HeaderValue::from_static("default-src 'self'; connect-src 'self' wss: blob:; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' blob: http: https:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
     response
         .headers_mut()
@@ -314,6 +329,8 @@ async fn bearer_status(State(state): State<AppState>, headers: HeaderMap) -> Res
 struct SessionResponse {
     authenticated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     csrf_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_in_seconds: Option<u64>,
@@ -339,6 +356,7 @@ async fn auth_session(State(state): State<AppState>, headers: HeaderMap) -> Resp
     match current_session(&state, &headers) {
         Some((_, csrf_token, expires_in)) => Json(SessionResponse {
             authenticated: true,
+            session_token: None,
             csrf_token: Some(csrf_token),
             expires_in_seconds: Some(expires_in),
             capabilities: capabilities(),
@@ -348,6 +366,7 @@ async fn auth_session(State(state): State<AppState>, headers: HeaderMap) -> Resp
             StatusCode::UNAUTHORIZED,
             Json(SessionResponse {
                 authenticated: false,
+                session_token: None,
                 csrf_token: None,
                 expires_in_seconds: None,
                 capabilities: capabilities(),
@@ -375,14 +394,14 @@ async fn login(
     }
 
     let (session_id, csrf_token) = create_browser_session(&state);
-    let mut response = Json(SessionResponse {
+    let response = Json(SessionResponse {
         authenticated: true,
+        session_token: Some(session_id),
         csrf_token: Some(csrf_token),
         expires_in_seconds: Some(state.browser_auth.ttl.as_secs()),
         capabilities: capabilities(),
     })
     .into_response();
-    set_browser_session_cookie(&state, &session_id, &mut response);
     response
 }
 
@@ -450,17 +469,6 @@ fn create_browser_session(state: &AppState) -> (String, String) {
     (session_id, csrf_token)
 }
 
-fn set_browser_session_cookie(state: &AppState, session_id: &str, response: &mut Response) {
-    let cookie = format!(
-        "{SESSION_COOKIE}={session_id}; Path=/; Max-Age={}; Secure; HttpOnly; SameSite=Strict",
-        state.browser_auth.ttl.as_secs()
-    );
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).expect("session cookie contains safe characters"),
-    );
-}
-
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !same_origin(&headers) {
         return (StatusCode::FORBIDDEN, "same-origin request required").into_response();
@@ -472,14 +480,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return (StatusCode::FORBIDDEN, "invalid CSRF token").into_response();
     }
     lock(&state.browser_auth.sessions).remove(&session_id);
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "__Host-webterm_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict",
-        ),
-    );
-    response
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[derive(Serialize)]
@@ -1028,7 +1029,8 @@ async fn terminal_websocket(
             return (StatusCode::INTERNAL_SERVER_ERROR, "terminal unavailable").into_response();
         }
     };
-    ws.max_message_size(64 * 1024)
+    ws.protocols(["webterm"])
+        .max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| async move {
             match prepared {
@@ -1668,7 +1670,36 @@ fn terminal_backend(runtime_id: &str) -> &'static str {
 }
 
 fn current_session(state: &AppState, headers: &HeaderMap) -> Option<(String, String, u64)> {
-    let session_id = cookie_value(headers, SESSION_COOKIE)?;
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| v == "cross-site")
+    {
+        return None;
+    }
+    if headers.contains_key(header::ORIGIN) && !same_origin(headers) {
+        return None;
+    }
+    let session_id = headers
+        .get(SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| {
+            if !headers
+                .get(header::UPGRADE)
+                .is_some_and(|v| v == "websocket")
+            {
+                return None;
+            }
+            headers
+                .get(header::SEC_WEBSOCKET_PROTOCOL)?
+                .to_str()
+                .ok()?
+                .split(',')
+                .find_map(|p| p.trim().strip_prefix("webterm.auth.").map(str::to_owned))
+        })?;
+    if session_id.len() != 32 || !session_id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
     let now = Instant::now();
     let mut sessions = lock(&state.browser_auth.sessions);
     sessions.retain(|_, session| session.expires_at > now);
@@ -1678,16 +1709,6 @@ fn current_session(state: &AppState, headers: &HeaderMap) -> Option<(String, Str
         session.csrf_token.clone(),
         session.expires_at.saturating_duration_since(now).as_secs(),
     ))
-}
-
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .filter_map(|pair| pair.trim().split_once('='))
-        .find_map(|(key, value)| (key == name).then(|| value.to_owned()))
 }
 
 fn valid_csrf(headers: &HeaderMap, expected: &str) -> bool {
@@ -1851,67 +1872,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn root_passwd_bootstraps_session_and_redirects_without_echoing_password() {
+    async fn password_urls_and_legacy_cookies_never_authenticate() {
         let app = test_router();
+        for path in [
+            "/?passwd=test-password",
+            "/?passwd=wrong-password",
+            "/?app=1",
+            "/log?app=1",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("host", "webterm.example")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(response.headers().get(header::SET_COOKIE).is_none());
+        }
         let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/?passwd=test-password")
-                    .header("host", "webterm.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/");
-        assert_eq!(
-            response.headers().get(header::CACHE_CONTROL).unwrap(),
-            "no-store, no-cache, must-revalidate"
-        );
-        let cookie = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert!(cookie.contains("Secure; HttpOnly; SameSite=Strict"));
-        assert!(!cookie.contains("test-password"));
-        let cookie_pair = cookie.split(';').next().unwrap();
-
-        let session = app
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/session")
-                    .header("cookie", cookie_pair)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(session.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn root_passwd_rejects_invalid_password_without_session_cookie() {
-        let response = test_router()
-            .oneshot(
-                Request::builder()
-                    .uri("/?passwd=wrong-password")
-                    .header("host", "webterm.example")
+                    .header("cookie", "__Host-webterm_session=old-session")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        assert!(response.headers().get(header::SET_COOKIE).is_none());
     }
 
     #[tokio::test]
-    async fn browser_login_cookie_csrf_and_logout_flow() {
+    async fn browser_login_header_csrf_and_logout_flow() {
         let app = test_router();
         let response = app
             .clone()
@@ -1928,20 +1925,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let cookie = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        assert!(cookie.contains("Secure; HttpOnly; SameSite=Strict"));
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
         let body = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         let csrf = json["csrf_token"].as_str().unwrap();
-        let cookie_pair = cookie.split(';').next().unwrap();
+        let session_token = json["session_token"].as_str().unwrap();
 
         let response = app
             .oneshot(
@@ -1950,7 +1940,7 @@ mod tests {
                     .uri("/api/v1/logout")
                     .header("host", "webterm.example")
                     .header("origin", "https://webterm.example")
-                    .header("cookie", cookie_pair)
+                    .header(SESSION_HEADER, session_token)
                     .header("x-csrf-token", csrf)
                     .body(Body::empty())
                     .unwrap(),
@@ -2024,22 +2014,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(login.status(), StatusCode::OK);
-        let cookie = login
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        assert!(login.headers().get(header::SET_COOKIE).is_none());
+        let bytes = axum::body::to_bytes(login.into_body(), 4096).await.unwrap();
+        let login_json: Value = serde_json::from_slice(&bytes).unwrap();
+        let session_token = login_json["session_token"].as_str().unwrap();
 
         let response = app
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/metrics")
-                    .header("cookie", cookie)
+                    .header(SESSION_HEADER, session_token)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2111,21 +2095,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let cookie = login
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        assert!(login.headers().get(header::SET_COOKIE).is_none());
+        let bytes = axum::body::to_bytes(login.into_body(), 4096).await.unwrap();
+        let login_json: Value = serde_json::from_slice(&bytes).unwrap();
+        let session_token = login_json["session_token"].as_str().unwrap();
         let response = app
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/folders")
-                    .header("cookie", cookie)
+                    .header(SESSION_HEADER, session_token)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2187,3 +2165,46 @@ mod tests {
 include!("web_extensions.rs");
 
 include!("web_explorer.rs");
+
+#[cfg(test)]
+mod lightweight_login_tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn guest_login_is_small_and_has_no_terminal_dependencies() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = Config {
+            database_path: tmp.path().join("db"),
+            runtime_socket: tmp.path().join("runtime.sock"),
+            ..Config::default()
+        };
+        let response = router(config)
+            .unwrap()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 16384).await.unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains("id=\"password\""));
+        assert!(text.contains("/assets/login.js"));
+        assert!(
+            !text.contains("xterm")
+                && !text.contains("/assets/app.js")
+                && !text.contains("/assets/app.css")
+        );
+        assert!(bytes.len() < 6000);
+    }
+    #[test]
+    fn login_script_has_bounded_auth_and_no_terminal_dependency() {
+        assert!(LOGIN_JS.contains("12000"));
+        assert!(LOGIN_JS.contains("webterm-login-ready"));
+        assert!(LOGIN_JS.contains("history.replaceState"));
+        assert!(!LOGIN_JS.contains("window.Terminal"));
+        assert!(LOGIN_JS.len() < 5000);
+    }
+}

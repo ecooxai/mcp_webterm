@@ -98,21 +98,7 @@ pub fn selected(uri: &Uri, headers: &HeaderMap) -> Result<Option<u16>, &'static 
             }
         }
     }
-    for cookie in headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(';'))
-    {
-        if let Some((name, value)) = cookie.trim().split_once('=') {
-            if name == COOKIE {
-                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-                    return Ok(None);
-                }
-                return Ok(value.parse::<u16>().ok().filter(|p| *p > 0));
-            }
-        }
-    }
+
     Ok(None)
 }
 
@@ -229,7 +215,7 @@ mod tests {
         assert_eq!(split_query(Some("proxyport=0")).unwrap().0, Some(0));
     }
     #[test]
-    fn explicit_then_control_then_reference_then_cookie() {
+    fn explicit_then_control_then_reference_ignores_cookies() {
         let mut h = HeaderMap::new();
         h.insert(
             header::COOKIE,
@@ -237,10 +223,7 @@ mod tests {
         );
         h.insert(header::HOST, HeaderValue::from_static("example.test"));
         h.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        assert_eq!(
-            selected(&"/resource".parse().unwrap(), &h).unwrap(),
-            Some(3000)
-        );
+        assert_eq!(selected(&"/resource".parse().unwrap(), &h).unwrap(), None);
         h.insert(
             header::REFERER,
             HeaderValue::from_static("https://example.test/app?proxyport=4000"),

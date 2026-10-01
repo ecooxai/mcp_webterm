@@ -39,7 +39,11 @@ pub fn activity(
     let roots = db
         .list_workspaces()?
         .into_iter()
-        .filter_map(|w| canonical_workspace_path(config, &w.path).ok().map(|r| (w.id, r)))
+        .filter_map(|w| {
+            canonical_workspace_path(config, &w.path)
+                .ok()
+                .map(|r| (w.id, r))
+        })
         .collect::<Vec<_>>();
     let owner = |path: &Path| {
         roots
@@ -176,7 +180,13 @@ fn git(dir: &Path, args: &[&str], limit: usize) -> Result<GitOutput> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "core.fsmonitor=false", "-c", "core.quotepath=false", "--no-pager"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.quotepath=false",
+            "--no-pager",
+        ])
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -189,7 +199,9 @@ fn git(dir: &Path, args: &[&str], limit: usize) -> Result<GitOutput> {
     let mut stdout = child.stdout.take().context("git output unavailable")?;
     let reader = std::thread::spawn(move || {
         let mut buffer = Vec::new();
-        let _ = (&mut stdout).take(limit as u64 + 1).read_to_end(&mut buffer);
+        let _ = (&mut stdout)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut buffer);
         // Drain the rest so git is not blocked writing to a full pipe.
         let _ = std::io::copy(&mut stdout, &mut std::io::sink());
         buffer
@@ -209,7 +221,11 @@ fn git(dir: &Path, args: &[&str], limit: usize) -> Result<GitOutput> {
     let mut stdout = reader.join().unwrap_or_default();
     let truncated = stdout.len() > limit;
     stdout.truncate(limit);
-    Ok(GitOutput { success: status.success(), stdout, truncated })
+    Ok(GitOutput {
+        success: status.success(),
+        stdout,
+        truncated,
+    })
 }
 
 /// Repository top level for a workspace, or None when it is not inside a git work tree.
@@ -230,7 +246,15 @@ pub fn git_status(config: &Config, workspace: &str) -> Result<Value> {
     // Paths are limited to the workspace but reported relative to the repository root.
     let output = git(
         &root,
-        &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all", "--", "."],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ],
         STATUS_OUTPUT_LIMIT,
     )?;
     if !output.success {
@@ -253,9 +277,12 @@ pub fn git_status(config: &Config, workspace: &str) -> Result<Value> {
                 "branch.upstream" => branch["upstream"] = json!(value),
                 "branch.ab" => {
                     for part in value.split_whitespace() {
-                        if let Some(n) = part.strip_prefix('+').and_then(|n| n.parse::<u64>().ok()) {
+                        if let Some(n) = part.strip_prefix('+').and_then(|n| n.parse::<u64>().ok())
+                        {
                             branch["ahead"] = json!(n);
-                        } else if let Some(n) = part.strip_prefix('-').and_then(|n| n.parse::<u64>().ok()) {
+                        } else if let Some(n) =
+                            part.strip_prefix('-').and_then(|n| n.parse::<u64>().ok())
+                        {
                             branch["behind"] = json!(n);
                         }
                     }
@@ -291,7 +318,10 @@ pub fn git_status(config: &Config, workspace: &str) -> Result<Value> {
             files.push(file);
         }
     }
-    let relative_root = root.strip_prefix(&top).map(Path::to_path_buf).unwrap_or_default();
+    let relative_root = root
+        .strip_prefix(&top)
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
     Ok(json!({
         "repository": true,
         "path": root,
@@ -325,7 +355,9 @@ pub fn git_diff(config: &Config, workspace: &str, path: &str) -> Result<Value> {
     if path.is_empty()
         || path.len() > 4096
         || path.contains('\0')
-        || !relative.components().all(|c| matches!(c, Component::Normal(_)))
+        || !relative
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
     {
         bail!("invalid file path");
     }
@@ -334,7 +366,12 @@ pub fn git_diff(config: &Config, workspace: &str, path: &str) -> Result<Value> {
     if !top.join(relative).starts_with(&root) {
         bail!("file is outside the workspace");
     }
-    let flags = ["--no-color", "--no-ext-diff", "--no-textconv", "--find-renames"];
+    let flags = [
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames",
+    ];
     let tracked = git(&top, &["ls-files", "--error-unmatch", "--", path], 4096)?.success;
     let output = if !tracked {
         let mut args = vec!["diff", "--no-index"];
@@ -370,7 +407,11 @@ mod tests {
 
     #[test]
     fn status_entries_use_the_most_significant_change() {
-        let entry = status_entry("M. N... 100644 100644 100644 a b src/x.rs", "src/x.rs", None);
+        let entry = status_entry(
+            "M. N... 100644 100644 100644 a b src/x.rs",
+            "src/x.rs",
+            None,
+        );
         assert_eq!(entry["status"], "modified");
         assert_eq!(entry["index"], "M");
         let entry = status_entry(".D N... 100644 100644 000000 a b gone.rs", "gone.rs", None);

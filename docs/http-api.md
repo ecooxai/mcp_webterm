@@ -35,7 +35,7 @@ curl https://webterm.example/mcp \
 ```
 
 For baseline compatibility, a configured development web password is also
-accepted as the single `passwd` query parameter (for example `?passwd=2208`).
+accepted as the single `passwd` query parameter for MCP compatibility (for example `?passwd=<configured-password>`).
 Bearer tokens are never accepted in the URL, and browser session cookies do not
 authenticate MCP. A missing or incorrect credential returns `401`; a server
 without either configured credential returns `503`. Supplied browser `Origin`

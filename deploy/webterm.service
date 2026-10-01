@@ -8,7 +8,8 @@ Type=simple
 User=admin
 Group=admin
 # Development deployment only: rotate/remove this argv password before production.
-ExecStart=/usr/local/bin/webterm --config /etc/webterm/webterm.toml --passwd 2208 serve
+EnvironmentFile=-/etc/default/webterm
+ExecStart=/usr/local/bin/webterm --config /etc/webterm/webterm.toml serve
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM

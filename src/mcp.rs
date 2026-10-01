@@ -183,9 +183,15 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
     let audit_start = Instant::now();
     let audit_config = state.config.clone();
     let audit_id = if method == "tools/call" {
-        let config = audit_config.clone(); let owned = params.cloned();
-        tokio::task::spawn_blocking(move || crate::audit::begin(&config, owned.as_ref())).await.ok().and_then(Result::ok)
-    } else { None };
+        let config = audit_config.clone();
+        let owned = params.cloned();
+        tokio::task::spawn_blocking(move || crate::audit::begin(&config, owned.as_ref()))
+            .await
+            .ok()
+            .and_then(Result::ok)
+    } else {
+        None
+    };
     let result = match method {
         "initialize" => initialize(params),
         "ping" => Ok(json!({})),
@@ -195,9 +201,21 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
     };
 
     if let Some(audit_id) = audit_id {
-        let (value, failed) = match &result { Ok(value) => (value.clone(), value.get("isError").and_then(Value::as_bool).unwrap_or(false)), Err(error) => (json!({"error":error.message}),true) };
+        let (value, failed) = match &result {
+            Ok(value) => (
+                value.clone(),
+                value
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            ),
+            Err(error) => (json!({"error":error.message}), true),
+        };
         let duration = audit_start.elapsed().as_millis();
-        let _ = tokio::task::spawn_blocking(move || crate::audit::finish(&audit_config,audit_id,&value,failed,duration)).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::audit::finish(&audit_config, audit_id, &value, failed, duration)
+        })
+        .await;
     }
     let message = match result {
         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
@@ -250,7 +268,7 @@ fn initialize(params: Option<&Map<String, Value>>) -> RpcResult {
         "protocolVersion": negotiated,
         "capabilities": {"tools":{"listChanged":false}},
         "serverInfo": {"name":"webterm","version":VERSION},
-        "instructions":"Use get_image to return workspace PNG/JPEG/GIF/WebP files as visible native image content, never print base64. Colab private previews use https://PORT-proxy-colabdev.alima.freeddns.org/ with distinct app origins. Use bash and python to build, test and debug in persistent virtual terminals. Bash, Python and terminal write/read/capture require task and summary. Reuse a simple task name; summary is n/100 progress plus fewer than 20 words describing this action. workspace_id accepts only absolute folder paths, never numeric IDs. Authenticated dev previews use /app/index.html?proxyport=PORT with unchanged app paths; /?proxyport=0 returns to WebTerm. Root-relative resources and WebSockets inherit the selected browser port; explicit proxyport always wins. workspace_id is the absolute folder path; one canonical folder has one workspace, visible in the browser. Commands wait up to 20 seconds by default, then return a running terminal handle; never re-run merely because the command is still running. Use terminal_read or terminal_capture to follow it. filter_cmd runs a bounded Bash program on the full retained snapshot via stdin (for example grep -i error or tail -c 500), before the preview; it never types into the original PTY. Prefer full_output=false to avoid polluting model context: outputs over 2000 characters show the first 500 and last 1500. full_output=true returns retained output within safety limits. For requested dev previews prefer cloudflared tunnel --url http://127.0.0.1:PORT in another terminal; this makes the service public, so never expose secrets or admin endpoints."
+        "instructions":crate::webterm_cmd::INSTRUCTIONS
     }))
 }
 
@@ -273,7 +291,7 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| RpcFailure::invalid_params("tool name must be a non-empty string"))?;
-    if !TOOL_NAMES.contains(&name) {
+    if name != "webterm" && !LEGACY_TOOL_NAMES.contains(&name) {
         return Err(RpcFailure::invalid_params(format!("unknown tool {name:?}")));
     }
     let arguments = match params.get("arguments") {
@@ -284,15 +302,59 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
         }
     };
     static IMAGE_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-    let _image_slot=if name=="get_image" {Some(IMAGE_LIMIT.acquire().await.expect("image semaphore remains open"))} else {None};
+    let _image_slot = if name == "get_image" {
+        Some(
+            IMAGE_LIMIT
+                .acquire()
+                .await
+                .expect("image semaphore remains open"),
+        )
+    } else {
+        None
+    };
+    static SHELL_LIMIT: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+    let _shell_slot = if name == "webterm" {
+        match SHELL_LIMIT.try_acquire() {
+            Ok(slot) => Some(slot),
+            Err(_) => {
+                return Ok(tool_error(
+                    "Eight WebTerm shell calls are active; wait for a call to finish before sending another.",
+                ));
+            }
+        }
+    } else {
+        None
+    };
     let name = name.to_owned();
     let task = tokio::task::spawn_blocking(move || {
+        let _shell_slot = _shell_slot;
         if name == "get_image" {
-            reject_unknown(&arguments, &["workspace_id","path","task","summary"])?;
-            validate_tracking(arguments.get("task").context("task is required")?, arguments.get("summary").context("summary is required")?)?;
-            crate::image_tool::read(&config, required_string(&arguments,"workspace_id")?,required_string(&arguments,"path")?)
-        } else { execute_tool(&config, &name, &arguments).map(tool_success) }
-    }).await;
+            reject_unknown(&arguments, &["workspace_id", "path", "task", "summary"])?;
+            validate_tracking(
+                arguments.get("task").context("task is required")?,
+                arguments.get("summary").context("summary is required")?,
+            )?;
+            crate::image_tool::read(
+                &config,
+                required_string(&arguments, "workspace_id")?,
+                required_string(&arguments, "path")?,
+            )
+        } else if name == "webterm" {
+            reject_unknown(&arguments, &["cmd", "text", "workspace", "task", "summary"])?;
+            crate::shell_tool::execute_with_metadata(
+                &config,
+                required_string(&arguments, "cmd")?,
+                optional_string(&arguments, "text")?,
+                optional_string(&arguments, "workspace")?,
+                optional_string(&arguments, "task")?,
+                optional_string(&arguments, "summary")?,
+            )
+            .map(compact_tool_success)
+        } else {
+            execute_tool(&config, &name, &arguments).map(tool_success)
+        }
+    })
+    .await;
     let result = match task {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => tool_error(&format!("{error:#}")),
@@ -302,6 +364,182 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
         }
     };
     Ok(result)
+}
+
+/// Shared entry point for the compact MCP command and flat CLI aliases.
+pub fn execute_cmd(config: &Config, text: &str) -> Result<Value> {
+    let mut cmd = crate::webterm_cmd::parse(text)?;
+    crate::call_context::CallContext::from_env(config)?.apply(config, &mut cmd)?;
+    if !cmd.args.contains_key("workspace_id") {
+        if let Some(id) = cmd.args.get("terminal_id").and_then(Value::as_i64) {
+            let db = Database::open_config(config)?;
+            let terminal = db.terminal_by_id(id)?;
+            let workspace = db.workspace_by_id(terminal.workspace_id)?;
+            let canonical = canonical_workspace_path(config, &workspace.path)?;
+            cmd.args.insert("workspace_id".into(), json!(canonical));
+        }
+    }
+    if let (Some(task), Some(summary)) = (&cmd.task, &cmd.summary) {
+        validate_tracking(&json!(task), &json!(summary))?;
+    }
+    if cmd.op == "help" {
+        return crate::webterm_cmd::help(cmd.args.get("topic").and_then(Value::as_str));
+    }
+    if cmd.op == "ls" {
+        return compact_list(config, &cmd);
+    }
+    let name = match cmd.op.as_str() {
+        "new" => "terminal_create",
+        "read" => "terminal_read",
+        "write" => "terminal_write",
+        "run" => "bash",
+        "python" => "python",
+        "resize" => "terminal_resize",
+        "stop" => "terminal_stop",
+        "ensure" => "workspace_ensure",
+        "status" => "status",
+        _ => bail!("unknown command; use help"),
+    };
+    let mut args = cmd.args.clone();
+    if matches!(name, "bash" | "python" | "terminal_read" | "terminal_write") {
+        args.insert(
+            "task".into(),
+            json!(cmd.task.as_deref().unwrap_or("webterm")),
+        );
+        args.insert(
+            "summary".into(),
+            json!(
+                cmd.summary
+                    .clone()
+                    .unwrap_or_else(|| format!("0/100 Running {}", cmd.op))
+            ),
+        );
+    }
+    let mut raw = execute_tool(config, name, &args)?;
+    if matches!(cmd.op.as_str(), "read" | "run" | "python") {
+        let mut result = crate::webterm_cmd::compact_output(&raw, &cmd);
+        if cmd.op == "read" && cmd.wait > 0.0 && raw["running"] == true {
+            let baseline = cmd
+                .if_changed
+                .clone()
+                .unwrap_or_else(|| result["snapshot"].as_str().unwrap().to_owned());
+            let start = Instant::now();
+            while result["snapshot"] == baseline
+                && raw["running"] == true
+                && start.elapsed().as_secs_f64() < cmd.wait
+            {
+                std::thread::sleep(
+                    Duration::from_millis(100)
+                        .min(Duration::from_secs_f64(cmd.wait).saturating_sub(start.elapsed())),
+                );
+                raw = execute_tool(config, name, &args)?;
+                result = crate::webterm_cmd::compact_output(&raw, &cmd);
+            }
+        }
+        return Ok(result);
+    }
+    if let Some(terminal) = raw.get("terminal") {
+        return Ok(compact_terminal(terminal));
+    }
+    if let Some(workspace) = raw.get("workspace") {
+        return Ok(json!({"workspace_id":workspace["path"]}));
+    }
+    Ok(raw)
+}
+
+fn compact_terminal(terminal: &Value) -> Value {
+    json!({"workspace_id":terminal["workspace_id"],"terminal_id":terminal["id"],"name":terminal["name"],"status":terminal["status"]})
+}
+
+fn compact_list(config: &Config, cmd: &crate::webterm_cmd::Parsed) -> Result<Value> {
+    let database = Database::open_config(config)?;
+    let manager = TerminalManager::new(config)?;
+    if cmd.args.get("kind").and_then(Value::as_str) == Some("terminals")
+        && !cmd.args.contains_key("workspace_id")
+    {
+        let records = database.list_terminals(None)?;
+        let paths = database
+            .list_workspaces()?
+            .into_iter()
+            .filter_map(|w| {
+                canonical_workspace_path(config, &w.path)
+                    .ok()
+                    .map(|p| (w.id, p))
+            })
+            .collect::<HashMap<_, _>>();
+        let visible = records
+            .iter()
+            .filter(|t| paths.contains_key(&t.workspace_id))
+            .collect::<Vec<_>>();
+        let selected = visible.iter().skip(cmd.offset).take(cmd.limit).map(|t|json!({"terminal_id":t.id,"workspace_id":paths[&t.workspace_id],"name":t.name,"status":if manager.has_session(t.session_id()).unwrap_or(false){"running"}else{"stopped"}})).collect::<Vec<_>>();
+        let next = cmd.offset + selected.len();
+        let mut value = json!({"terminals":selected,"total":visible.len()});
+        if next < visible.len() {
+            value["next_offset"] = json!(next);
+        }
+        return Ok(value);
+    }
+    if cmd.args.contains_key("workspace_id") {
+        let workspace = workspace_arg(config, &cmd.args, false)?.context("workspace required")?;
+        let terminals = database.list_terminals(Some(workspace.id))?;
+        let total = terminals.len();
+        let selected = terminals.iter().skip(cmd.offset).take(cmd.limit).map(|t| {
+            let alive = manager.has_session(t.session_id()).unwrap_or(false);
+            json!({"terminal_id":t.id,"name":t.name,"status":if alive {"running"} else {"stopped"}})
+        }).collect::<Vec<_>>();
+        let next = cmd.offset + selected.len();
+        let mut out = json!({"workspace_id":workspace.path,"terminals":selected,"total":total});
+        if next < total {
+            out["next_offset"] = json!(next);
+        }
+        return Ok(out);
+    }
+    let workspaces = database.list_workspaces()?;
+    let total = workspaces.len();
+    let selected = workspaces
+        .iter()
+        .skip(cmd.offset)
+        .take(cmd.limit)
+        .map(|w| json!({"workspace_id":w.path,"name":w.name}))
+        .collect::<Vec<_>>();
+    let next = cmd.offset + selected.len();
+    let mut out = json!({"workspaces":selected,"total":total});
+    if next < total {
+        out["next_offset"] = json!(next);
+    }
+    Ok(out)
+}
+
+fn compact_tool_success(result: Value) -> Value {
+    // MCP structured content plus a minified text fallback for older clients.
+    json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":false})
+}
+
+fn tool_definitions() -> Vec<Value> {
+    vec![
+        tool_definition(
+            "webterm",
+            "WebTerm",
+            crate::webterm_cmd::DESCRIPTION,
+            object_schema(
+                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder path. Sets Bash cwd and scopes read/write; include with task and summary for progress logs."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Simple task name. Reuse for related calls; provide together with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with 0..100/100, then describe this call and current progress. Fewer than 50 words total; one line. Provide together with task."}}),
+                &["cmd"],
+            ),
+            json!({"type":"object"}),
+            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
+        ),
+        tool_definition(
+            "get_image",
+            "Get image",
+            "Return a workspace PNG/JPEG/GIF/WebP as native image content, not base64 text. Max 16 MiB, 32 megapixels.",
+            object_schema(
+                json!({"workspace_id":{"type":"string","minLength":1,"maxLength":4096},"path":{"type":"string","minLength":1,"maxLength":4096},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}),
+                &["workspace_id", "path", "task", "summary"],
+            ),
+            crate::output_contracts::schema("get_image"),
+            json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
+        ),
+    ]
 }
 
 fn execute_tool(config: &Config, name: &str, arguments: &Map<String, Value>) -> Result<Value> {
@@ -785,6 +1023,14 @@ fn quote_shell(value: &str) -> String {
 }
 
 fn tool_command(config: &Config, name: &str, args: &Map<String, Value>) -> Result<Value> {
+    tool_command_inner(config, name, args, false)
+}
+fn tool_command_inner(
+    config: &Config,
+    name: &str,
+    args: &Map<String, Value>,
+    auto_close: bool,
+) -> Result<Value> {
     use std::os::unix::fs::PermissionsExt;
     let key = if name == "bash" { "command" } else { "code" };
     reject_unknown(args, &["workspace_id", key, "wait_s", "full_output"])?;
@@ -837,9 +1083,10 @@ fn tool_command(config: &Config, name: &str, args: &Map<String, Value>) -> Resul
     )?;
     private_write(&folder.join("result.json"),serde_json::to_string(&json!({"language":name,"running":true,"exit_code":null,"output":"","output_chars":0,"starting":true}))?.as_bytes())?;
     let launch = format!(
-        "python3 {} {}",
+        "python3 {} {}{}",
         quote_shell(&folder.join("runner.py").to_string_lossy()),
-        quote_shell(&folder.to_string_lossy())
+        quote_shell(&folder.to_string_lossy()),
+        if auto_close { "; exit" } else { "" }
     );
     let began = Instant::now();
     TerminalManager::new(config)?.write(terminal.session_id(), &launch, true)?;
@@ -853,7 +1100,22 @@ fn tool_command(config: &Config, name: &str, args: &Map<String, Value>) -> Resul
     }
 }
 
-const TOOL_NAMES: [&str; 13] = [
+/// Durable ordinary Bash; retire only its own shell after the collector exits.
+pub(crate) fn durable_shell(config: &Config, source: &str, workspace: &Path) -> Result<Value> {
+    let mut raw = tool_command_inner(
+        config,
+        "bash",
+        json!({"workspace_id":workspace,"command":source,"wait_s":20,"full_output":true})
+            .as_object()
+            .unwrap(),
+        true,
+    )?;
+    public_paths(config, &mut raw)?;
+    let parsed = crate::webterm_cmd::parse("read 1")?;
+    Ok(crate::webterm_cmd::compact_output(&raw, &parsed))
+}
+
+const LEGACY_TOOL_NAMES: [&str; 13] = [
     "get_image",
     "workspace_ensure",
     "bash",
@@ -869,7 +1131,8 @@ const TOOL_NAMES: [&str; 13] = [
     "terminal_stop",
 ];
 
-fn tool_definitions() -> Vec<Value> {
+#[cfg(test)]
+fn legacy_tool_definitions() -> Vec<Value> {
     let read_only = json!({
         "readOnlyHint":true,
         "destructiveHint":false,
@@ -1032,7 +1295,7 @@ fn tool_definitions() -> Vec<Value> {
         properties[key] = json!({"type":"string","minLength":1,"maxLength":32768});
         definitions.push(tool_definition(name,name,"Build, test and debug in a persistent virtual terminal in workspace_id. Wait up to 20 seconds by default; return output and exit_code when complete, otherwise a running terminal_id. Prefer full_output=false.",object_schema(properties,&["workspace_id",key]),json!({"type":"object"}),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})));
     }
-    definitions.push(tool_definition("get_image","Get image","Return one PNG/JPEG/GIF/WebP file as native MCP image content so the client can see it. Path is confined to workspace_id; max 16 MiB and 32 megapixels. No shell or file upload.",object_schema(json!({"workspace_id":workspace.clone(),"path":{"type":"string","minLength":1,"maxLength":4096},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":240}}), &["workspace_id","path","task","summary"]),json!({"type":"object"}),json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})));
+    definitions.push(tool_definition("get_image","Get image","Return one PNG/JPEG/GIF/WebP file as native MCP image content so the client can see it. Path is confined to workspace_id; max 16 MiB and 32 megapixels. No shell or file upload.",object_schema(json!({"workspace_id":workspace.clone(),"path":{"type":"string","minLength":1,"maxLength":4096},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}), &["workspace_id","path","task","summary"]),json!({"type":"object"}),json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})));
     for tool in &mut definitions {
         if matches!(
             tool["name"].as_str(),
@@ -1060,7 +1323,7 @@ fn tool_definitions() -> Vec<Value> {
     definitions
 }
 
-fn validate_tracking(task: &Value, summary: &Value) -> Result<()> {
+pub(crate) fn validate_tracking(task: &Value, summary: &Value) -> Result<()> {
     let task = task.as_str().context("task must be a simple task name")?;
     if task.trim().is_empty() || task.chars().count() > 80 || task.chars().any(char::is_control) {
         bail!("task must be a single-line name of 1..80 characters");
@@ -1068,18 +1331,18 @@ fn validate_tracking(task: &Value, summary: &Value) -> Result<()> {
     let summary = summary
         .as_str()
         .context("summary must be n/100 followed by a description")?;
-    if summary.chars().count() > 240 || summary.chars().any(char::is_control) {
-        bail!("summary must be one line of at most 240 characters");
+    if summary.chars().count() > 2048 || summary.chars().any(char::is_control) {
+        bail!("summary must be one line of at most 2048 characters");
     }
     let fields = summary.split_whitespace().collect::<Vec<_>>();
-    if !(2..=20).contains(&fields.len()) {
-        bail!("summary description must contain fewer than 20 words");
+    if !(2..50).contains(&fields.len()) {
+        bail!("summary must contain fewer than 50 words total");
     }
     let number = fields[0]
         .strip_suffix("/100")
         .context("summary must start with n/100")?;
     if number.is_empty()
-        || number.len() > 3
+        || (number.len() > 2 && number != "100")
         || !number.bytes().all(|b| b.is_ascii_digit())
         || number.parse::<u16>()? > 100
     {
@@ -1371,6 +1634,7 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 
 type RpcResult = std::result::Result<Value, RpcFailure>;
 
+#[derive(Debug)]
 struct RpcFailure {
     code: i64,
     message: String,
@@ -1476,12 +1740,12 @@ mod tests {
     async fn query_password_can_authenticate_without_authorization_header() {
         let temp = TempDir::new().unwrap();
         let mut config = test_config(&temp);
-        config.web_password = Some("2208".to_owned());
+        config.web_password = Some("test-password".to_owned());
         let app = router(config);
 
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/mcp?password=2208")
+            .uri("/mcp?password=test-password")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json")
             .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
@@ -1504,7 +1768,7 @@ mod tests {
 
         let duplicate = Request::builder()
             .method(Method::POST)
-            .uri("/mcp?password=2208&password=2208")
+            .uri("/mcp?password=test-password&password=test-password")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json")
             .body(Body::from(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#))
@@ -1698,13 +1962,15 @@ mod tests {
         )
         .await;
         let tools = listed["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), TOOL_NAMES.len());
-        let stop = tools
-            .iter()
-            .find(|tool| tool["name"] == "terminal_stop")
-            .unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(
+            tools
+                .iter()
+                .all(|t| t["name"] == "webterm" || t["name"] == "get_image")
+        );
+        let stop = tools.iter().find(|tool| tool["name"] == "webterm").unwrap();
         assert_eq!(stop["annotations"]["destructiveHint"], true);
-        assert_eq!(stop["annotations"]["idempotentHint"], true);
+        assert_eq!(stop["annotations"]["idempotentHint"], false);
         assert_eq!(stop["inputSchema"]["additionalProperties"], false);
 
         let call = json_body(
@@ -1974,7 +2240,7 @@ mod path_command_tests {
 
     #[test]
     fn advertised_commands_wait_twenty_seconds_and_scope_all_terminals() {
-        for tool in tool_definitions() {
+        for tool in legacy_tool_definitions() {
             let name = tool["name"].as_str().unwrap();
             if name.starts_with("terminal_") || name == "bash" || name == "python" {
                 assert_eq!(
@@ -2004,7 +2270,7 @@ mod task_tracking_tests {
     use super::*;
     #[test]
     fn tracked_schema_is_required() {
-        for d in tool_definitions() {
+        for d in legacy_tool_definitions() {
             if matches!(
                 d["name"].as_str(),
                 Some("bash" | "python" | "terminal_read" | "terminal_capture" | "terminal_write")
@@ -2042,7 +2308,7 @@ mod task_tracking_tests {
         assert!(
             validate_tracking(
                 &json!("Task"),
-                &json!(format!("35/100 {}", "word ".repeat(20)))
+                &json!(format!("35/100 {}", "word ".repeat(49)))
             )
             .is_err()
         );
@@ -2059,5 +2325,110 @@ mod task_tracking_tests {
             .is_err()
         );
         assert!(execute_tool(&c, "terminal_list", &Map::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn config(t: &TempDir) -> Config {
+        Config {
+            database_path: t.path().join("state.db"),
+            runtime_socket: t.path().join("runtime.sock"),
+            workspace_roots: vec![t.path().into()],
+            ..Config::default()
+        }
+    }
+    #[test]
+    fn discovery_is_small_and_honestly_annotated() {
+        let current = tool_definitions();
+        let old = legacy_tool_definitions();
+        assert_eq!(
+            current
+                .iter()
+                .map(|t| t["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["webterm", "get_image"]
+        );
+        assert_eq!(current[0]["inputSchema"]["required"], json!(["cmd"]));
+        assert_eq!(
+            current[0]["inputSchema"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(current[0]["annotations"]["readOnlyHint"], false);
+        assert_eq!(current[0]["annotations"]["destructiveHint"], true);
+        let before = serde_json::to_vec(&old).unwrap().len();
+        let after = serde_json::to_vec(&current).unwrap().len();
+        println!(
+            "discovery bytes: before={before}, after={after}, reduction={:.2}%",
+            100.0 * (1.0 - after as f64 / before as f64)
+        );
+        assert!(after * 5 < before, "{after} vs {before}");
+        assert!(crate::webterm_cmd::INSTRUCTIONS.len() < 600);
+    }
+    #[test]
+    fn listing_is_paginated_and_does_not_repeat_terminal_metadata() {
+        let t = TempDir::new().unwrap();
+        let c = config(&t);
+        for name in ["a", "b", "c"] {
+            execute_cmd(&c, &format!("ensure {}", t.path().join(name).display())).unwrap();
+        }
+        let first = execute_cmd(&c, "ls --limit 2").unwrap();
+        assert_eq!(first["total"], 3);
+        assert_eq!(first["workspaces"].as_array().unwrap().len(), 2);
+        assert_eq!(first["next_offset"], 2);
+        let last = execute_cmd(&c, "ls --limit 2 --offset 2").unwrap();
+        assert_eq!(last["workspaces"].as_array().unwrap().len(), 1);
+        assert!(last.get("next_offset").is_none());
+        let outside = execute_cmd(&c, "ls --offset 999").unwrap();
+        assert_eq!(outside["workspaces"], json!([]));
+    }
+    #[test]
+    fn invalid_tracking_or_options_never_create_workspace() {
+        let t = TempDir::new().unwrap();
+        let c = config(&t);
+        let path = t.path().join("not-created");
+        for options in [
+            "--task test --summary '101/100 Invalid progress'",
+            "--unknown yes",
+            "--cols 0",
+        ] {
+            assert!(execute_cmd(&c, &format!("new {} {options}", path.display())).is_err());
+            assert!(!path.exists());
+        }
+    }
+    #[test]
+    fn help_requires_no_database_or_runtime() {
+        let value = execute_cmd(&Config::default(), "help read").unwrap();
+        assert_eq!(value["commands"].as_array().unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn compact_wire_validation_and_legacy_compatibility() {
+        let t = TempDir::new().unwrap();
+        let c = Arc::new(config(&t));
+        let _params = json!({"name":"webterm","arguments":{"cmd":"help write"}});
+        let r = compact_tool_success(execute_cmd(&c, "help write").unwrap());
+        assert_eq!(r["isError"], false);
+        assert_eq!(
+            serde_json::from_str::<Value>(r["content"][0]["text"].as_str().unwrap()).unwrap(),
+            r["structuredContent"]
+        );
+        assert!(!r["content"][0]["text"].as_str().unwrap().contains('\n'));
+        for args in [
+            json!({}),
+            json!({"cmd":1}),
+            json!({"cmd":"help","workspace_id":"/tmp"}),
+        ] {
+            let p = json!({"name":"webterm","arguments":args});
+            let r = call_tool(c.clone(), p.as_object()).await.unwrap();
+            assert_eq!(r["isError"], true);
+        }
+        let p = json!({"name":"workspace_list","arguments":{}});
+        assert_eq!(call_tool(c, p.as_object()).await.unwrap()["isError"], false);
     }
 }

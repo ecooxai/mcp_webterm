@@ -1,6 +1,22 @@
 # webterm
 
-`webterm` is a compact Rust service and CLI for folder-backed workspaces and persistent named terminals. The service binds to loopback only and is published through the TLS-only Caddy route in [`deploy/7681-webterm.caddy`](deploy/7681-webterm.caddy).
+
+## Cookie-free browser sign-in
+
+The browser saves the password in `localStorage` as `webterm.password`. Login verifies it using the existing rate-limited password verifier and returns a random expiring session/CSRF pair kept only in page memory. HTTP API calls send `X-WebTerm-Session`; writes retain same-origin and CSRF checks. WebSocket authentication uses an offered `webterm.auth.<session>` subprotocol while the server selects only `webterm`. No WebTerm session or routing cookies are read or written. Legacy browser password URLs no longer sign in; MCP authentication remains unchanged.
+
+Sign-out clears the password and revokes the active page session. Reload and frontend-restart recovery reauthenticate with the saved password. Private file previews use a narrow service worker and explicit headers, preserving HTTP range streaming without putting credentials in URLs. HTTPS or a secure loopback context is required. Only trusted same-origin code should be hosted here: localStorage passwords are readable by scripts on the same origin.
+
+The Colab gateway embeds a measured in-instance uptime panel and an explicit Start dev button in the overview and both native log aliases; viewing them does not start an instance.
+
+
+## Literal text payloads and fast sign-in
+
+Prefer `webterm({"cmd":"webterm run /home/dev/project/app","text":"code"})` and `webterm({"cmd":"webterm write ID --enter","text":"input"})`. The optional text payload is preserved literally and kept out of outer-shell parsing. Existing Bash pipeline calls work without `text`. The sign-in page now loads independently of the terminal application and is served locally by the Colab gateway. See [the command and sign-in guide](docs/webterm-command.md).
+
+## Bash-backed compact MCP interface
+
+Use **webterm({"cmd":"webterm read ID | grep error"})** for real Bash pipelines and native terminal controls. `webterm ls terminals` lists native IDs; old gateway aliases are different. The instance advertises `webterm` and native `get_image`; the Colab gateway adds only `colab(cmd)` for lifecycle management. Controls consume no persistent PTY slots, and long-running work uses `webterm run`. See [command syntax and migration](docs/webterm-command.md). Refresh client discovery after upgrading.
 
 ## Build and test
 
@@ -46,7 +62,7 @@ Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LIST
 
 ## Browser authentication
 
-The development service currently starts with `--passwd 2208` as explicitly requested for testing. Existing `?passwd=2208` authentication compatibility remains available where supported by the HTTP/MCP baseline. This exposes a development credential in the systemd unit/process arguments and URL query strings and **must not be used in production**. The browser login path hashes the configured password with Argon2id at startup and keeps only the hash for verification.
+Configure the WebTerm password through the service environment instead of hard-coding it in unit files or URLs. Browser login stores the validated password only in browser localStorage and exchanges it for short-lived explicit header credentials; it does not use cookies. The browser login path hashes the configured password with Argon2id at startup and keeps only the hash for verification.
 
 For production, remove `--passwd`, generate an Argon2id PHC string using a trusted offline password tool, store it mode 0600, and set `web_password_hash_file` to that protected path (systemd credentials are preferred). Restarting the service invalidates all in-memory browser sessions. Rotate the separate bearer token independently.
 

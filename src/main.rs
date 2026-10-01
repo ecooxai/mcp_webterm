@@ -50,6 +50,11 @@ enum Command {
         #[command(subcommand)]
         command: TerminalCommand,
     },
+    /// Execute the compact MCP grammar, e.g. webterm cmd 'read /workspace 1'.
+    Cmd { cmd: String },
+    /// Compact aliases: new/read/write/run/python/ls/ensure/resize/stop/status.
+    #[command(external_subcommand)]
+    Compact(Vec<String>),
     /// Open the interactive workspace/terminal hierarchy.
     Tui,
 }
@@ -191,6 +196,8 @@ async fn main() -> Result<()> {
         Command::List { json } => list_workspaces(&config, json),
         Command::Workspace { command } => workspace_command(&config, command),
         Command::Terminal { command } => terminal_command(&config, command),
+        Command::Cmd { cmd } => webterm::shell_tool::native(&config, &["cmd".into(), cmd]),
+        Command::Compact(args) => webterm::shell_tool::native(&config, &args),
         Command::Tui => {
             let database = Database::open_config(&config)?;
             let terminals = TerminalManager::new(&config)?;
@@ -479,19 +486,28 @@ async fn serve(config: Config) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("bind {}", config.listen))?;
-    let proxy_addr = std::net::SocketAddr::from(([0, 0, 0, 0], webterm::generic_proxy::PROXY_PORT));
+    let proxy_addr: std::net::SocketAddr = match std::env::var("WEBTERM_PROXY_LISTEN") {
+        Ok(value) => value.parse().context("parse WEBTERM_PROXY_LISTEN")?,
+        Err(_) => std::net::SocketAddr::from(([0, 0, 0, 0], webterm::generic_proxy::PROXY_PORT)),
+    };
     let proxy_listener = tokio::net::TcpListener::bind(proxy_addr)
         .await
         .with_context(|| format!("bind URL proxy {proxy_addr}"))?;
 
     info!(address = %config.listen, version = VERSION, "webterm listening");
-    info!(address = %proxy_addr, "webterm URL proxy listening");
+    info!(address = %proxy_listener.local_addr()?, "webterm URL proxy listening");
 
     let web_router = web::router(config)?;
     let proxy_router = webterm::generic_proxy::router()?;
 
     let web_task = tokio::spawn(async move { axum::serve(listener, web_router).await });
-    let proxy_task = tokio::spawn(async move { axum::serve(proxy_listener, proxy_router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await });
+    let proxy_task = tokio::spawn(async move {
+        axum::serve(
+            proxy_listener,
+            proxy_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
 
     tokio::select! {
         result = web_task => {

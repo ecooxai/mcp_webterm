@@ -140,8 +140,18 @@ pub fn referer_port(headers: &HeaderMap, uri: &Uri) -> Option<u16> {
 }
 
 pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
-    let host_preview=request.extensions().get::<crate::subdomain_proxy::HostPreview>().is_some();
-    let app_authorization=if host_preview{request.headers().get("x-webterm-app-authorization").cloned()}else{None};
+    let host_preview = request
+        .extensions()
+        .get::<crate::subdomain_proxy::HostPreview>()
+        .is_some();
+    let app_authorization = if host_preview {
+        request
+            .headers()
+            .get("x-webterm-app-authorization")
+            .cloned()
+    } else {
+        None
+    };
     if request.method() == Method::CONNECT {
         return error(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -220,8 +230,22 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
         .cloned()
         .unwrap_or(HeaderValue::from_static("http"));
     let cookies = if host_preview {
-        request.headers().get_all(header::COOKIE).iter().filter_map(|v|v.to_str().ok()).flat_map(|v|v.split(';')).filter(|v|v.split_once('=').is_some_and(|(n,_)|!crate::subdomain_proxy::reserved_cookie(n))).map(str::trim).collect::<Vec<_>>().join("; ")
-    } else { filtered_cookies(request.headers()) };
+        request
+            .headers()
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter(|v| {
+                v.split_once('=')
+                    .is_some_and(|(n, _)| !crate::subdomain_proxy::reserved_cookie(n))
+            })
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("; ")
+    } else {
+        filtered_cookies(request.headers())
+    };
     let origin = request.headers().contains_key(header::ORIGIN);
     let headers = request.headers_mut();
     hop_headers(headers, websocket);
@@ -236,7 +260,7 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
         "x-webterm-preview-port",
         "x-webterm-app-authorization",
         "x-webterm-control",
-        "x-webterm-control",
+        "x-webterm-session",
     ] {
         headers.remove(name);
     }
@@ -248,8 +272,16 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
         headers.insert("x-forwarded-host", host);
     }
     headers.insert("x-forwarded-proto", proto);
-    headers.insert("x-forwarded-prefix",HeaderValue::from_str(&prefix).unwrap());
-    if host_preview {headers.remove("x-forwarded-prefix");if let Some(auth)=app_authorization {headers.insert(header::AUTHORIZATION,auth);}}
+    headers.insert(
+        "x-forwarded-prefix",
+        HeaderValue::from_str(&prefix).unwrap(),
+    );
+    if host_preview {
+        headers.remove("x-forwarded-prefix");
+        if let Some(auth) = app_authorization {
+            headers.insert(header::AUTHORIZATION, auth);
+        }
+    }
     if !cookies.is_empty() {
         if let Ok(cookie) = HeaderValue::from_str(&cookies) {
             headers.insert(header::COOKIE, cookie);
@@ -324,7 +356,9 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .map(|v| {
-            if host_preview { crate::subdomain_proxy::redirect(v,port) } else if query_mode {
+            if host_preview {
+                crate::subdomain_proxy::redirect(v, port)
+            } else if query_mode {
                 crate::query_proxy::redirect(v, port, public_host.as_deref())
             } else {
                 redirect(v, &prefix, port)
@@ -339,7 +373,13 @@ pub async fn forward(mut request: Request<Body>, self_port: u16) -> Response {
         .get_all(header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .filter_map(|v| if host_preview {crate::subdomain_proxy::cookie(v)}else{scoped_cookie(v, &prefix)})
+        .filter_map(|v| {
+            if host_preview {
+                crate::subdomain_proxy::cookie(v)
+            } else {
+                scoped_cookie(v, &prefix)
+            }
+        })
         .collect();
     headers.remove(header::SET_COOKIE);
     for cookie in cookies {
@@ -411,12 +451,39 @@ mod tests {
             h
         };
         let uri = |p: &str| p.parse::<Uri>().unwrap();
-        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173/"), &uri("/src/main.ts")), Some(5173));
-        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173"), &uri("/@vite/client")), Some(5173));
-        assert_eq!(referer_port(&headers("http://box:10000/proxy/5173/"), &uri("/proxy/5173/a")), None);
-        assert_eq!(referer_port(&headers("http://evil:10000/proxy/5173/"), &uri("/a")), None);
-        assert_eq!(referer_port(&headers("http://box:10000/"), &uri("/assets/app.js")), None);
-        assert_eq!(referer_port(&headers("http://box:10000/proxy/x/"), &uri("/a")), None);
+        assert_eq!(
+            referer_port(
+                &headers("http://box:10000/proxy/5173/"),
+                &uri("/src/main.ts")
+            ),
+            Some(5173)
+        );
+        assert_eq!(
+            referer_port(
+                &headers("http://box:10000/proxy/5173"),
+                &uri("/@vite/client")
+            ),
+            Some(5173)
+        );
+        assert_eq!(
+            referer_port(
+                &headers("http://box:10000/proxy/5173/"),
+                &uri("/proxy/5173/a")
+            ),
+            None
+        );
+        assert_eq!(
+            referer_port(&headers("http://evil:10000/proxy/5173/"), &uri("/a")),
+            None
+        );
+        assert_eq!(
+            referer_port(&headers("http://box:10000/"), &uri("/assets/app.js")),
+            None
+        );
+        assert_eq!(
+            referer_port(&headers("http://box:10000/proxy/x/"), &uri("/a")),
+            None
+        );
     }
     #[test]
     fn named_hop_headers_are_stripped() {

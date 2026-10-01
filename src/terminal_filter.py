@@ -39,8 +39,8 @@ class Capture:
         return self.head + self.tail
 
 
-def run(command: str, text: str, cwd: str, timeout: float = TIMEOUT) -> dict:
-    if not isinstance(command, str) or not command.strip() or '\0' in command or len(command.encode()) > 4096:
+def run(command: str, text: str, cwd: str, timeout: float = TIMEOUT, max_command_bytes: int = 4096, env_overrides: dict | None = None) -> dict:
+    if not isinstance(command, str) or not command.strip() or '\0' in command or len(command.encode()) > max_command_bytes:
         raise ValueError('filter_cmd must be nonempty Bash text of at most 4096 UTF-8 bytes')
     out, err = Capture(OUTPUT_CHARS), Capture(STDERR_CHARS)
     began = time.monotonic()
@@ -48,6 +48,8 @@ def run(command: str, text: str, cwd: str, timeout: float = TIMEOUT) -> dict:
     env = dict(os.environ)
     for key in ('BASH_ENV', 'ENV', 'WEBTERM_PASSWORD', 'WEBTERM_AUTH_TOKEN', 'AUTH_TOKEN'):
         env.pop(key, None)
+    if env_overrides:
+        env.update(env_overrides)
     # A private anonymous file also handles filters which never consume stdin.
     with tempfile.TemporaryFile() as source, selectors.DefaultSelector() as selector:
         source.write(text.encode('utf-8')); source.seek(0)

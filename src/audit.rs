@@ -98,10 +98,47 @@ fn encoded(config: &Config, v: &Value) -> String {
 pub fn begin(config: &Config, params: Option<&serde_json::Map<String, Value>>) -> Result<i64> {
     let p = params.cloned().unwrap_or_default();
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
+    // Derive attribution from the same validated grammar without executing payloads.
+    let mut args = args;
+    if p.get("name").and_then(Value::as_str) == Some("webterm") {
+        if let Some(workspace) = args.get("workspace").cloned() {
+            args["workspace_id"] = workspace;
+        }
+        if let Some(cmd) = args.get("cmd").and_then(Value::as_str).and_then(|s| {
+            if let Some(text) = args.get("text").and_then(Value::as_str) {
+                crate::webterm_cmd::with_text(s, text)
+                    .ok()
+                    .and_then(|value| crate::webterm_cmd::parse(&value).ok())
+            } else {
+                crate::webterm_cmd::parse_for_tracking(s).ok()
+            }
+        }) {
+            if args.get("workspace_id").is_none() {
+                if let Some(workspace) = cmd.args.get("workspace_id") {
+                    args["workspace_id"] = workspace.clone();
+                }
+            }
+            if args.get("task").is_none() {
+                args["task"] = json!(cmd.task.unwrap_or_else(|| "webterm".into()));
+            }
+            if args.get("summary").is_none() {
+                args["summary"] = json!(
+                    cmd.summary
+                        .unwrap_or_else(|| format!("0/100 Running {}", cmd.op))
+                );
+            }
+        }
+    }
     let get = |k: &str| {
         cut(
             args.get(k).and_then(Value::as_str).unwrap_or(""),
-            if k == "workspace_id" { 4096 } else { 240 },
+            if k == "workspace_id" {
+                4096
+            } else if k == "summary" {
+                2048
+            } else {
+                80
+            },
         )
     };
     let tool = cut(

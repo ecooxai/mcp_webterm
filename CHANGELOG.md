@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.3 - 2026-10-01
+
+- Start and watch top-level `~/project/autoboot/*.sh` files after a 10-second delay,
+  with filename-named terminals, debounced same-ID restarts, and deletion cleanup.
+- Persist autoboot ownership, prevent duplicate watchers, preserve live apps across
+  frontend restarts, recover daemon loss, and seed a safe editable template once.
+- Reconnect open browser tabs after script restarts and remove deleted autoboot
+  terminals automatically without a manual workspace refresh.
+- Ignore nested directories, symlinks, non-shell files, oversized/unreadable scripts,
+  and retry transient startup failures without reserving duplicate terminals.
+- Add isolated process, browser, static-release, and live-instance autoboot regressions.
+
 ## 0.2.2 - 2026-10-01
 
 - Bound compact tool text to the first 200 and last 800 Unicode characters. Truncated results point to `webterm read ID --full`; run/python cannot flood responses with `--full`.

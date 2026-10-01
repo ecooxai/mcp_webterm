@@ -574,3 +574,51 @@ Compact command text is limited by default to 1,000 Unicode characters: exactly 
 Standard error is included in the returned `text`, not hidden in a separate field. Run commands retain a separate bounded stderr diagnostic copy, so an early error is not lost behind a noisy stdout tail. Both streams still behave as terminals. When diagnostics would otherwise be omitted, they are appended before applying the same preview budget. Filter/control/helper failures include their stderr too. A write reports only a compact receipt; use `webterm read ID` to see the command result, including stderr. The write input is never echoed in the receipt.
 
 Piped controls retain no new terminal: when `source_terminal_id` is available, the read-more hint explicitly refers to the original unfiltered terminal. Controls without an ID do not invent one. Structured lists remain paginated metadata; the preview applies to textual output and error messages. Shortening does not change command exit status.
+
+
+## Autoboot scripts
+
+Webterm's HTTP frontend starts a background watcher after **10 seconds**. It creates
+and registers `~/project/autoboot` as a workspace, using the service user's HOME.
+Only direct, regular `.sh` files are executed, in a terminal named exactly after
+that file (including `.sh`). Nested directories and symlinks are not executed.
+No executable bit is required: Webterm runs each script with Bash.
+
+Adding a script starts a terminal. Editing it restarts its process in the **same
+terminal ID** after the save settles; atomic editor replacements are supported.
+Deleting the script stops its process tree and removes its terminal. The browser
+refreshes workspace/terminal entries automatically. Already-running apps are
+adopted across frontend restarts rather than launched twice; a lost PTY daemon is
+recovered using the original terminal IDs. Completed/failed scripts are not put
+in a crash loop: edit their file to rerun them. Keep applications in the foreground
+with `exec`; do not daemonize or detach them from the terminal.
+
+The first initialization seeds `template.sh` without overwriting an existing file.
+It waits 20 seconds, changes to `$HOME/project`, and runs a harmless Python demo.
+Its commented examples show environment variables, Node, npm, Python, and native
+applications. Delete it when no longer needed; the watcher will not recreate it.
+
+Configuration: `autoboot_enabled = true`, `autoboot_delay_seconds = 10`, and optional
+absolute `autoboot_dir`. The directory must be inside configured `workspace_roots`.
+Polling is every 500 ms with a 750 ms stability window; typical file actions occur
+within about 1–2 seconds after a save. Existing Webterm name restrictions apply
+(1–64 characters, no control characters/edge whitespace, case-insensitive unique
+names). Same-named user terminals are never taken over. Scripts over 1 MiB or
+unreadable files are logged and skipped without blocking other scripts. Temporary
+start failures retry every 5 seconds without reserving duplicate terminals.
+
+Ownership is stored beside the database as `*.autoboot.json`, protected by
+`*.autoboot.lock`. Do not delete ownership state while its terminals are running.
+Only the watcher stops on a frontend shutdown; apps and the independent runtime
+remain running. `autoboot_enabled = false` disables subsequent watcher startup,
+not applications that are already running. Use script deletion to stop/remove them.
+Placing a `.sh` file here authorizes execution as the Webterm service user; protect
+this directory and only place trusted scripts in it. No new Rust dependencies.
+
+Autoboot regression suite (isolated HOME, database, ports, runtime, and Chrome):
+
+```sh
+cargo test --locked
+cargo build --locked
+WEBTERM_TEST_BIN=/build/cargo-target/debug/webterm python3 tests/autoboot_integration.py
+```

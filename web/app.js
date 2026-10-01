@@ -449,14 +449,43 @@
         state.terminals.set(terminal.id, terminal);
         const session = state.sessions.get(terminal.id);
         if (session) {
+          const replaced = terminal.sessionId && session.terminal.sessionId &&
+            terminal.sessionId !== session.terminal.sessionId;
+          const resume = replaced || session.connection === "stopped" || !session.desired;
+          if (replaced) {
+            // Hot reload keeps the public terminal ID but replaces its native PTY.
+            // Invalidate the old transport so a late "closed" frame cannot stop
+            // the new connection. Preserve the tab/xterm and user selection.
+            session.generation += 1;
+            const previous = session.socket;
+            session.socket = null;
+            clearTimeout(session.reconnectTimer);
+            session.reconnectTimer = 0;
+            session.outputParts.length = 0;
+            session.renderQueue.length = 0;
+            session.initialSnapshotRendered = false;
+            session.connection = "idle";
+            try { previous?.close(1000, "terminal session replaced"); } catch (_) { /* closed */ }
+          }
           session.terminal = terminal;
           session.surface.setAttribute("aria-label", `Terminal ${terminal.name} in ${workspace.name}`);
           if (terminal.status !== "running") markSessionStopped(session);
-          else session.stoppedOverlay.hidden = true;
+          else {
+            session.stoppedOverlay.hidden = true;
+            if (resume && state.capabilities.terminal_websocket !== false) {
+              session.desired = true;
+              connectSession(session);
+            }
+          }
         }
       }
     }
 
+    // Filesystem-driven deletion and changes from another browser must also
+    // dispose their local transports/renderers, not just remove sidebar rows.
+    for (const id of Array.from(state.sessions.keys())) {
+      if (!state.terminals.has(id)) removeTerminalSession(id);
+    }
     if (state.activeId && !state.terminals.has(state.activeId)) deactivateTerminal();
     renderNavigation();
     if (!state.activeId && !window.WebTermExplorer?.isViewerActive() && !window.WebTermTools?.isWebviewActive()) {
@@ -482,6 +511,7 @@
     return {
       id: String(raw.id),
       workspaceId: String(raw.workspace_id ?? raw.workspaceId ?? workspaceId),
+      sessionId: String(raw.session_id ?? raw.sessionId ?? ""),
       name: String(raw.name ?? `Terminal ${raw.id}`),
       status: String(raw.status ?? "running").toLowerCase(),
       backend,

@@ -1037,13 +1037,52 @@ fn quote_shell(value: &str) -> String {
 fn tool_command(config: &Config, name: &str, args: &Map<String, Value>) -> Result<Value> {
     tool_command_inner(config, name, args, false)
 }
+/// Start the existing tracked runner in an already-created, caller-owned terminal.
+/// The caller owns failure cleanup and must never replay an ambiguous live launch.
+pub(crate) fn launch_tracked_command(
+    config: &Config,
+    terminal: &Terminal,
+    name: &str,
+    source: &str,
+    auto_close: bool,
+) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = command_folder(config, terminal);
+    fs::create_dir_all(&folder)?;
+    fs::set_permissions(folder.parent().unwrap(), fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))?;
+    private_write(
+        &folder.join("runner.py"),
+        include_bytes!("command_runner.py"),
+    )?;
+    private_write(
+        &folder.join(if name == "bash" {
+            "source.sh"
+        } else {
+            "source.py"
+        }),
+        source.as_bytes(),
+    )?;
+    private_write(
+        &folder.join("spec.json"),
+        serde_json::to_string(&json!({"language":name}))?.as_bytes(),
+    )?;
+    private_write(&folder.join("result.json"),serde_json::to_string(&json!({"language":name,"running":true,"exit_code":null,"output":"","output_chars":0,"starting":true}))?.as_bytes())?;
+    let launch = format!(
+        "python3 {} {}{}",
+        quote_shell(&folder.join("runner.py").to_string_lossy()),
+        quote_shell(&folder.to_string_lossy()),
+        if auto_close { "; exit" } else { "" }
+    );
+    TerminalManager::new(config)?.write(terminal.session_id(), &launch, true)
+}
+
 fn tool_command_inner(
     config: &Config,
     name: &str,
     args: &Map<String, Value>,
     auto_close: bool,
 ) -> Result<Value> {
-    use std::os::unix::fs::PermissionsExt;
     let key = if name == "bash" { "command" } else { "code" };
     reject_unknown(args, &["workspace_id", key, "wait_s", "full_output"])?;
     let source = required_string(args, key)?;
@@ -1073,35 +1112,8 @@ fn tool_command_inner(
         .context("new terminal ID")?;
     let database = Database::open_config(config)?;
     let terminal = database.terminal_by_id(terminal_id)?;
-    let folder = command_folder(config, &terminal);
-    fs::create_dir_all(&folder)?;
-    fs::set_permissions(folder.parent().unwrap(), fs::Permissions::from_mode(0o700))?;
-    fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))?;
-    private_write(
-        &folder.join("runner.py"),
-        include_bytes!("command_runner.py"),
-    )?;
-    private_write(
-        &folder.join(if name == "bash" {
-            "source.sh"
-        } else {
-            "source.py"
-        }),
-        source.as_bytes(),
-    )?;
-    private_write(
-        &folder.join("spec.json"),
-        serde_json::to_string(&json!({"language":name}))?.as_bytes(),
-    )?;
-    private_write(&folder.join("result.json"),serde_json::to_string(&json!({"language":name,"running":true,"exit_code":null,"output":"","output_chars":0,"starting":true}))?.as_bytes())?;
-    let launch = format!(
-        "python3 {} {}{}",
-        quote_shell(&folder.join("runner.py").to_string_lossy()),
-        quote_shell(&folder.to_string_lossy()),
-        if auto_close { "; exit" } else { "" }
-    );
+    launch_tracked_command(config, &terminal, name, source, auto_close)?;
     let began = Instant::now();
-    TerminalManager::new(config)?.write(terminal.session_id(), &launch, true)?;
     loop {
         let value =
             command_result(config, &terminal, full)?.context("command output record missing")?;

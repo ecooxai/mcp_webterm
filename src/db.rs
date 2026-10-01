@@ -484,6 +484,33 @@ impl Database {
         self.terminal_by_id(id)
     }
 
+    /// Rotate only a caller-owned session. Terminal identity/name remain stable.
+    pub(crate) fn replace_owned_terminal_session(
+        &self,
+        id: i64,
+        expected: &str,
+    ) -> Result<Terminal> {
+        let changed = self.connection.execute(
+            "UPDATE terminals SET tmux_session=?1,status='starting',updated_at=?2 WHERE id=?3 AND tmux_session=?4",
+            params![new_native_session_id(), unix_timestamp()?, id, expected],
+        )?;
+        if changed != 1 {
+            bail!("terminal ownership changed; refusing restart");
+        }
+        self.terminal_by_id(id)
+    }
+
+    pub(crate) fn delete_owned_terminal(&self, id: i64, expected: &str) -> Result<()> {
+        let changed = self.connection.execute(
+            "DELETE FROM terminals WHERE id=?1 AND tmux_session=?2",
+            params![id, expected],
+        )?;
+        if changed != 1 {
+            bail!("terminal ownership changed; refusing removal");
+        }
+        Ok(())
+    }
+
     pub fn delete_terminal(&self, id: i64) -> Result<()> {
         self.connection
             .execute("DELETE FROM terminals WHERE id = ?1", [id])?;

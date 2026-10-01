@@ -37,3 +37,5 @@ pub mod shell_tool;
 pub mod call_context;
 
 pub mod output_preview;
+
+pub mod autoboot;

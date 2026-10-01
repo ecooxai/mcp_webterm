@@ -15,6 +15,9 @@ pub struct Config {
     pub runtime_socket: PathBuf,
     pub tmux_socket: PathBuf,
     pub workspace_roots: Vec<PathBuf>,
+    pub autoboot_enabled: bool,
+    pub autoboot_dir: Option<PathBuf>,
+    pub autoboot_delay_seconds: u64,
     pub auth_token_file: Option<PathBuf>,
     pub web_password_hash_file: Option<PathBuf>,
     pub web_session_ttl_seconds: u64,
@@ -37,6 +40,9 @@ impl Default for Config {
             runtime_socket: state_dir.join("runtime.sock"),
             tmux_socket: state_dir.join("tmux.sock"),
             workspace_roots: Vec::new(),
+            autoboot_enabled: true,
+            autoboot_dir: None,
+            autoboot_delay_seconds: 10,
             auth_token_file: None,
             web_password_hash_file: None,
             web_session_ttl_seconds: 28_800,
@@ -92,6 +98,18 @@ impl Config {
         }
         if !(300..=604_800).contains(&self.web_session_ttl_seconds) {
             bail!("web_session_ttl_seconds must be between 300 and 604800")
+        }
+        if self.autoboot_delay_seconds > 3600 {
+            bail!("autoboot_delay_seconds must be at most 3600");
+        }
+        if let Some(path) = &self.autoboot_dir {
+            if !path.is_absolute()
+                || path
+                    .components()
+                    .any(|p| matches!(p, std::path::Component::ParentDir))
+            {
+                bail!("autoboot_dir must be an absolute folder without .. components");
+            }
         }
         validate_runtime_socket(&self.runtime_socket)?;
         if self.runtime_socket == self.tmux_socket {

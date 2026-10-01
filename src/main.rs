@@ -497,6 +497,7 @@ async fn serve(config: Config) -> Result<()> {
     info!(address = %config.listen, version = VERSION, "webterm listening");
     info!(address = %proxy_listener.local_addr()?, "webterm URL proxy listening");
 
+    let autoboot_config = config.clone();
     let web_router = web::router(config)?;
     let proxy_router = webterm::generic_proxy::router()?;
 
@@ -508,6 +509,9 @@ async fn serve(config: Config) -> Result<()> {
         )
         .await
     });
+
+    // This guard stops only the watcher, never its independent terminal processes.
+    let _autoboot = webterm::autoboot::start(autoboot_config)?;
 
     tokio::select! {
         result = web_task => {

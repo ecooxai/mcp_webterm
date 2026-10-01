@@ -7,3 +7,10 @@ workspace_roots = ["/home/admin/project"]
 auth_token_file = "/etc/webterm/token"
 web_password_hash_file = "/run/credentials/webterm.service/webterm-password-hash"
 web_session_ttl_seconds = 28800
+
+# After the HTTP frontend is ready, wait 10 seconds, then open ~/project/autoboot.
+# Its top-level .sh files run in filename-named terminals; edits restart, deletion removes.
+# Only folders within workspace_roots are allowed. Symlinked scripts are ignored.
+autoboot_enabled = true
+autoboot_delay_seconds = 10
+# autoboot_dir = "/home/admin/project/autoboot" # default: service user's HOME/project/autoboot

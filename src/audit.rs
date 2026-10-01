@@ -98,6 +98,8 @@ fn encoded(config: &Config, v: &Value) -> String {
 pub fn begin(config: &Config, params: Option<&serde_json::Map<String, Value>>) -> Result<i64> {
     let p = params.cloned().unwrap_or_default();
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
+    let original_args = args.clone();
+    // Derive attribution separately; never inject inferred fields into logged inputs.
     // Derive attribution from the same validated grammar without executing payloads.
     let mut args = args;
     if p.get("name").and_then(Value::as_str) == Some("webterm") {
@@ -119,13 +121,12 @@ pub fn begin(config: &Config, params: Option<&serde_json::Map<String, Value>>) -
                 }
             }
             if args.get("task").is_none() {
-                args["task"] = json!(cmd.task.unwrap_or_else(|| "webterm".into()));
+                args["task"] = json!(cmd.task.unwrap_or_else(|| "Untracked command".into()));
             }
             if args.get("summary").is_none() {
-                args["summary"] = json!(
-                    cmd.summary
-                        .unwrap_or_else(|| format!("0/100 Running {}", cmd.op))
-                );
+                args["summary"] = json!(cmd.summary.unwrap_or_else(|| {
+                    "0/100 Progress not supplied; include task and summary".to_owned()
+                }));
             }
         }
     }
@@ -146,7 +147,7 @@ pub fn begin(config: &Config, params: Option<&serde_json::Map<String, Value>>) -
         80,
     );
     let d = db(config)?;
-    d.execute("INSERT INTO calls(started_ms,status,tool,task,summary,workspace,input_size,arguments) VALUES(?1,'running',?2,?3,?4,?5,?6,?7)",params![now(),tool,get("task"),get("summary"),get("workspace_id"),args.to_string().len() as i64,encoded(config,&args)])?;
+    d.execute("INSERT INTO calls(started_ms,status,tool,task,summary,workspace,input_size,arguments) VALUES(?1,'running',?2,?3,?4,?5,?6,?7)",params![now(),tool,get("task"),get("summary"),get("workspace_id"),original_args.to_string().len() as i64,encoded(config,&original_args)])?;
     Ok(d.last_insert_rowid())
 }
 pub fn finish(config: &Config, id: i64, output: &Value, error: bool, duration: u128) -> Result<()> {

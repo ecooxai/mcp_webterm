@@ -490,6 +490,16 @@
       },
       "filter_input_chars": {
         "type": "integer"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stderr_chars": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "stderr_retention_limited": {
+        "type": "boolean"
       }
     },
     "required": [
@@ -574,6 +584,16 @@
       },
       "filter_input_chars": {
         "type": "integer"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stderr_chars": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "stderr_retention_limited": {
+        "type": "boolean"
       }
     },
     "required": [
@@ -680,6 +700,16 @@
       },
       "truncation_note": {
         "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stderr_chars": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "stderr_retention_limited": {
+        "type": "boolean"
       }
     },
     "required": [
@@ -782,6 +812,16 @@
       },
       "truncation_note": {
         "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stderr_chars": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "stderr_retention_limited": {
+        "type": "boolean"
       }
     },
     "required": [

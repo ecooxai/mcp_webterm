@@ -35,3 +35,5 @@ pub mod webterm_cmd;
 pub mod shell_tool;
 
 pub mod call_context;
+
+pub mod output_preview;

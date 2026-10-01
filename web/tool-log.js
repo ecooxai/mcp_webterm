@@ -296,6 +296,31 @@
       .setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden) detail(card, id);
   }
+  function formatOutput(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        !value.structuredContent || typeof value.structuredContent !== "object" ||
+        Array.isArray(value.structuredContent)) return value;
+    const original = value.structuredContent;
+    const data = { ...original };
+    if (typeof data.output === "string" && !("text" in data)) {
+      data.text = data.output;
+      delete data.output;
+    }
+    const equal = (a, b) => {
+      if (a === b) return true;
+      if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+      if (Array.isArray(a) !== Array.isArray(b)) return false;
+      const keys = Object.keys(a);
+      return keys.length === Object.keys(b).length && keys.every(k =>
+        Object.prototype.hasOwnProperty.call(b, k) && equal(a[k], b[k]));
+    };
+    const content = (Array.isArray(value.content) ? value.content : []).filter(block => {
+      if (block.type !== "text") return true;
+      try { return !equal(JSON.parse(block.text), original); } catch { return true; }
+    });
+    if (!value.isError && content.length === 0) return data;
+    return { ...value, structuredContent: data, content };
+  }
   async function detail(card, id) {
     const panel = card.querySelector(".tool-log-details");
     if (!panel.children.length) panel.textContent = "Loading payloads…";
@@ -309,7 +334,7 @@
         pre.textContent =
           body[key] === null
             ? "Still running…"
-            : JSON.stringify(body[key], null, 2);
+            : JSON.stringify(key === "output" ? formatOutput(body[key]) : body[key], null, 2);
         group.append(pre);
         panel.append(group);
       }
@@ -317,5 +342,5 @@
       panel.textContent = error.message || "Payload unavailable";
     }
   }
-  window.WebTermLog = { init, open, close };
+  window.WebTermLog = { init, open, close, formatOutput };
 })();

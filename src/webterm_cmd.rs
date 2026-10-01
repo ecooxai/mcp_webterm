@@ -5,8 +5,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
 pub const MAX_CMD_BYTES: usize = 96 * 1024;
-pub const DESCRIPTION: &str = "Bash and WebTerm controls. Read/write accept workspace (absolute folder), task (simple name), summary (n/100 then current progress, fewer than 50 words total). Prefer cmd='webterm run /path', text='code' or cmd='webterm write ID --enter', text='input'. text is literal; no outer-shell quoting. Without text, cmd supports Bash pipes, e.g. webterm read ID | grep error. ls terminals lists native IDs. Long work returns terminal_id; read it, never rerun.";
-pub const INSTRUCTIONS: &str = "Use webterm(cmd) for Bash and controls; optional text is literal run/python code or write input. On read/write include workspace (absolute existing folder), task (simple name), summary (n/100 then progress, fewer than 50 words total). Metadata works with pipelines: webterm read ID | grep error. ls terminals lists native IDs. Controls use no PTY slots. Poll returned terminal_id; never rerun. get_image returns native images. Private previews: https://PORT-proxy-colabdev.alima.freeddns.org/.";
+pub const DESCRIPTION: &str = "Bash/terminal controls. Prefer cmd='webterm run', workspace='/absolute/project', text='code'; never repeat the path in cmd. Results default to first 200 + last 800 characters; if omitted/read_more appears, use webterm read ID --full, never rerun. run/python remain capped even with --full. Errors include stderr in text. write sends input once; read its ID for execution results. Create a descriptive task name at task start and reuse across calls/follow-up chats, not webterm/run. Summary: honest current progress or quality n/100 plus status, under 50 words; do not reset per call. text is literal; Bash pipelines work without text.";
+pub const INSTRUCTIONS: &str = "Use webterm(cmd='webterm run', workspace='/absolute/project', text='code'); do not repeat the path. Results: first 200 + last 800 chars, including stderr on errors. For omitted/read_more use webterm read ID --full, never rerun. Only explicit read expands output. write sends input; read its ID for results. Reuse a descriptive task name across calls/follow-up chats. Always supply task and summary for task work; summary has honest current progress or quality n/100 plus status, under 50 words. Do not reset per call. Bash pipes work without text; get_image returns native images.";
 
 #[derive(Debug, Clone)]
 pub struct Parsed {
@@ -117,7 +117,7 @@ pub fn parse(src: &str) -> Result<Parsed> {
         op,
         json: false,
         args: Map::new(),
-        max_chars: 2000,
+        max_chars: crate::output_preview::DEFAULT_CHARS,
         full: false,
         if_changed: None,
         wait: 0.0,
@@ -256,7 +256,8 @@ pub fn parse(src: &str) -> Result<Parsed> {
         "help" | "ls" => 0..=1,
         "status" => 0..=0,
         "new" => 1..=2,
-        "ensure" | "run" | "python" => 1..=1,
+        "run" | "python" => 0..=1,
+        "ensure" => 1..=1,
         "resize" => 4..=4,
         _ => 2..=2,
     };
@@ -418,16 +419,16 @@ pub fn help(topic: Option<&str>) -> Result<Value> {
         ),
         (
             "read",
-            "read [WORKSPACE] ID [--json] [--lines 100] [--max-chars 2000|--full] [--if-changed SNAPSHOT] [--wait 0..20] [--filter 'BASH']",
+            "read [WORKSPACE] ID [--json] [--lines 100] [--max-chars 1000|--full] [--if-changed SNAPSHOT] [--wait 0..20] [--filter 'BASH']",
         ),
         ("write", "write WORKSPACE ID [--enter] -- LITERAL_INPUT"),
         (
             "run",
-            "run WORKSPACE [--wait 20] [--max-chars 2000|--full] -- BASH_CODE",
+            "run [WORKSPACE] [--wait 20] [--max-chars 1000|--full] -- BASH_CODE",
         ),
         (
             "python",
-            "python WORKSPACE [--wait 20] [--max-chars 2000|--full] -- PYTHON_CODE",
+            "python [WORKSPACE] [--wait 20] [--max-chars 1000|--full] -- PYTHON_CODE",
         ),
         (
             "ls",
@@ -447,14 +448,14 @@ pub fn help(topic: Option<&str>) -> Result<Value> {
         bail!("unknown help topic; use help");
     }
     Ok(json!({"commands":commands,"notes":[
-        "MCP accepts optional text for one run, python or write header. Example: cmd=webterm run /path, text=code. Text is literal, not outer-shell-expanded; omit inline code and pipelines when text is supplied.",
+        "MCP accepts optional text for one run, python or write header. Example: cmd=webterm run, workspace=/path, text=code. Do not repeat the workspace path in cmd; run/python require workspace metadata or a legacy positional path. Text is literal, not outer-shell-expanded; omit inline code and pipelines when text is supplied.",
         "Optional leading webterm. WORKSPACE is an absolute folder path; quote paths with spaces. ID is the numeric terminal_id returned by new/run/ls; zero padding is accepted, and workspace ownership is checked.",
         "All terminal tools are consolidated here. get_image stays separate for native image content. Legacy tools remain callable but are not advertised.",
         "The MCP command is Bash. Quote scripts and write payloads after -- to prevent evaluation by the outer shell. CLI read prints retained text for pipes; --json requests structured metadata. webterm cmd accepts the old literal grammar as one quoted argument.",
-        "run/python create one tracked command. When running=true, use read, never resubmit. Default output is first 500 plus last 1500 characters. omitted reports missing characters; --full still respects 256 KiB retention.",
+        "run/python create one tracked command. When running=true, use read, never resubmit. Default output is first 200 plus last 800 characters. When omitted is present, use the read_more command (webterm read ID --full) for retained text. MCP run/python stay at 1000 characters even with --full; only explicit read expands output. Never rerun the command to read more. --full still respects 256 KiB retention.",
         "read returns a snapshot fingerprint. Reuse it with --if-changed to omit unchanged output; add --wait 20 to long-poll. This is a non-cryptographic change detector, not a resumable log cursor.",
         "--filter runs Bash once on the retained snapshot via stdin, not in the target PTY. It has shell permissions, a five-second limit, and cannot combine with --wait.",
-        "Optional --task NAME --summary '35/100 Brief action' adds progress attribution. Authentication and workspace root restrictions are unchanged."
+        "Choose a descriptive task name when work starts and reuse it for the same work, including follow-up chats. Include an honest current progress or quality n/100 and concrete status, not generic webterm or 0/100 Running run. Optional --task NAME --summary '35/100 Progress: parser fixed; tests running' adds attribution. Authentication and workspace root restrictions are unchanged."
     ]}))
 }
 
@@ -472,6 +473,8 @@ pub fn compact_output(raw: &Value, cmd: &Parsed) -> Value {
         raw["interrupted"].as_bool().unwrap_or(false),
         raw["filter_exit_code"],
         raw["filter_stderr"],
+        raw["stderr"],
+        raw["stderr_chars"],
         raw["filter_timed_out"].as_bool().unwrap_or(false),
         raw["filter_output_limit_hit"].as_bool().unwrap_or(false)
     ]);
@@ -491,7 +494,7 @@ pub fn compact_output(raw: &Value, cmd: &Parsed) -> Value {
         .unwrap_or(chars.len() as u64)
         .max(chars.len() as u64);
     let shown = if chars.len() > cmd.max_chars {
-        let head = cmd.max_chars / 4;
+        let head = cmd.max_chars / 5;
         chars[..head]
             .iter()
             .chain(chars[chars.len() - (cmd.max_chars - head)..].iter())
@@ -511,6 +514,9 @@ pub fn compact_output(raw: &Value, cmd: &Parsed) -> Value {
         "interrupted",
         "filter_exit_code",
         "filter_stderr",
+        "stderr",
+        "stderr_chars",
+        "stderr_retention_limited",
         "filter_input_limited",
         "filter_stderr_truncated",
         "filter_timed_out",
@@ -627,7 +633,7 @@ mod tests {
         let mut cmd = parse("read /tmp 1 --max-chars 4").unwrap();
         let raw = json!({"workspace_id":"/tmp","terminal_id":1,"running":false,"exit_code":0,"output":"界abcdef🙂","output_chars":8});
         let first = compact_output(&raw, &cmd);
-        assert_eq!(first["output"], "界ef🙂");
+        assert_eq!(first["output"], "def🙂");
         assert_eq!(first["omitted"], 4);
         cmd.if_changed = Some(first["snapshot"].as_str().unwrap().into());
         let same = compact_output(&raw, &cmd);
@@ -718,5 +724,34 @@ mod text_parameter_tests {
         assert!(with_text("run /tmp", &"#".repeat(32768)).is_ok());
         assert!(with_text("run /tmp", &"x".repeat(32769)).is_err());
         assert!(with_text("write 1", &"界".repeat(21846)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod workspace_parameter_tests {
+    use super::*;
+    #[test]
+    fn run_and_python_accept_workspace_from_context() {
+        for command in [
+            "webterm run",
+            "run --full",
+            "python --wait 0",
+            "webterm bash",
+            "webterm exec",
+        ] {
+            let literal = with_text(command, "print_or_echo_literal").unwrap();
+            let parsed = parse(&literal).unwrap();
+            assert!(!parsed.args.contains_key("workspace_id"));
+        }
+        assert!(
+            parse("run /tmp -- pwd")
+                .unwrap()
+                .args
+                .contains_key("workspace_id")
+        );
+        assert!(parse("run relative -- pwd").is_err());
+        assert!(with_text("webterm run | cat", "pwd").is_err());
+        assert!(with_text("webterm run -- echo inline", "pwd").is_err());
+        assert!(with_text("webterm run", "").is_err());
     }
 }

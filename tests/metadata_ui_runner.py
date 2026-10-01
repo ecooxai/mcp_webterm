@@ -2,8 +2,9 @@
 import json,os,secrets,socket,subprocess,tempfile,time,urllib.request
 from pathlib import Path
 from webterm_browser_smoke import smoke
-BIN='/build/cargo-target/debug/webterm'
-OUT=Path('.output/metadata-sidebar_GPT-6-Astra-Pro_ChatGPT').resolve()
+BIN=os.environ.get('WEBTERM_TEST_BIN','/build/cargo-target/debug/webterm')
+OUT=Path(os.environ.get('WEBTERM_UI_OUTPUT','.output/metadata-sidebar_GPT-6-Astra-Pro_ChatGPT')).resolve()
+OUT.mkdir(parents=True,exist_ok=True)
 def freeport():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 with tempfile.TemporaryDirectory(prefix='metadata-ui-',dir='/build') as name:

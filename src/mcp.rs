@@ -341,6 +341,14 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
             )
         } else if name == "webterm" {
             reject_unknown(&arguments, &["cmd", "text", "workspace", "task", "summary"])?;
+            let max_chars = if !arguments.contains_key("text") {
+                crate::webterm_cmd::parse_for_tracking(required_string(&arguments, "cmd")?)
+                    .ok()
+                    .filter(|cmd| cmd.op == "read")
+                    .map_or(crate::output_preview::DEFAULT_CHARS, |cmd| cmd.max_chars)
+            } else {
+                crate::output_preview::DEFAULT_CHARS
+            };
             crate::shell_tool::execute_with_metadata(
                 &config,
                 required_string(&arguments, "cmd")?,
@@ -349,7 +357,7 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
                 optional_string(&arguments, "task")?,
                 optional_string(&arguments, "summary")?,
             )
-            .map(compact_tool_success)
+            .map(|result| compact_tool_success(result, max_chars))
         } else {
             execute_tool(&config, &name, &arguments).map(tool_success)
         }
@@ -379,6 +387,9 @@ pub fn execute_cmd(config: &Config, text: &str) -> Result<Value> {
             cmd.args.insert("workspace_id".into(), json!(canonical));
         }
     }
+    if matches!(cmd.op.as_str(), "run" | "python") && !cmd.args.contains_key("workspace_id") {
+        bail!("run/python requires the workspace parameter (or a legacy WORKSPACE path in cmd)");
+    }
     if let (Some(task), Some(summary)) = (&cmd.task, &cmd.summary) {
         validate_tracking(&json!(task), &json!(summary))?;
     }
@@ -404,15 +415,13 @@ pub fn execute_cmd(config: &Config, text: &str) -> Result<Value> {
     if matches!(name, "bash" | "python" | "terminal_read" | "terminal_write") {
         args.insert(
             "task".into(),
-            json!(cmd.task.as_deref().unwrap_or("webterm")),
+            json!(cmd.task.as_deref().unwrap_or("Untracked command")),
         );
         args.insert(
             "summary".into(),
-            json!(
-                cmd.summary
-                    .clone()
-                    .unwrap_or_else(|| format!("0/100 Running {}", cmd.op))
-            ),
+            json!(cmd.summary.clone().unwrap_or_else(|| {
+                "0/100 Progress not supplied; include task and summary".to_owned()
+            })),
         );
     }
     let mut raw = execute_tool(config, name, &args)?;
@@ -510,9 +519,9 @@ fn compact_list(config: &Config, cmd: &crate::webterm_cmd::Parsed) -> Result<Val
     Ok(out)
 }
 
-fn compact_tool_success(result: Value) -> Value {
-    // MCP structured content plus a minified text fallback for older clients.
-    json!({"content":[{"type":"text","text":result.to_string()}],"structuredContent":result,"isError":false})
+fn compact_tool_success(result: Value, max_chars: usize) -> Value {
+    let result = crate::output_preview::compact(result, max_chars);
+    json!({"content":[],"structuredContent":result,"isError":false})
 }
 
 fn tool_definitions() -> Vec<Value> {
@@ -522,10 +531,10 @@ fn tool_definitions() -> Vec<Value> {
             "WebTerm",
             crate::webterm_cmd::DESCRIPTION,
             object_schema(
-                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder path. Sets Bash cwd and scopes read/write; include with task and summary for progress logs."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Simple task name. Reuse for related calls; provide together with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with 0..100/100, then describe this call and current progress. Fewer than 50 words total; one line. Provide together with task."}}),
+                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder. Sets cwd for run/python and Bash, and scopes read/write. Use cmd=webterm run; do not repeat this path in cmd."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Create a descriptive task name when work starts, e.g. Webterm command cleanup; reuse unchanged in all related calls and follow-up chats. Never generic webterm/run. Provide with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with honest current progress or quality 0..100/100, then concrete status and this call. Under 50 words, one line. Carry progress forward; never reset to 0 per call. Provide with task."}}),
                 &["cmd"],
             ),
-            json!({"type":"object"}),
+            json!({"type":"object","properties":{"text":{"type":"string","description":"Captured output: first 200 + last 800 characters by default; stderr is included on errors. Follow read_more with webterm read ID --full to expand retained output."}},"additionalProperties":true}),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
         ),
         tool_definition(
@@ -762,6 +771,9 @@ fn tool_terminal_capture(config: &Config, arguments: &Map<String, Value>) -> Res
         "capture_lines",
         "filter_exit_code",
         "filter_stderr",
+        "stderr",
+        "stderr_chars",
+        "stderr_retention_limited",
         "filter_input_chars",
         "filter_input_limited",
         "filter_stderr_truncated",
@@ -941,11 +953,11 @@ fn limit_output(value: &mut Value, full: bool) {
         .get("output_chars")
         .and_then(Value::as_u64)
         .unwrap_or(chars.len() as u64);
-    let preview = !full && chars.len() > 2000;
+    let preview = !full && chars.len() > 1000;
     let shown = if preview {
-        chars[..500]
+        chars[..200]
             .iter()
-            .chain(chars[chars.len() - 1500..].iter())
+            .chain(chars[chars.len() - 800..].iter())
             .collect::<String>()
     } else {
         output
@@ -960,7 +972,7 @@ fn limit_output(value: &mut Value, full: bool) {
     value["omitted_chars"] = json!(total.saturating_sub(shown_chars));
     if preview {
         value["truncation_note"] = json!(
-            "Output contains exactly the first 500 and last 1500 characters; the middle is omitted. Prefer full_output=false to avoid context pollution. Use full_output=true only when needed."
+            "Output contains exactly the first 200 and last 800 characters; the middle is omitted. Prefer full_output=false to avoid context pollution. Use full_output=true only when needed."
         );
     } else if shown_chars < total {
         value["truncation_note"] = json!(
@@ -1257,7 +1269,7 @@ fn legacy_tool_definitions() -> Vec<Value> {
         ),
     ];
     let workspace = json!({"type":"string","minLength":1,"maxLength":4096,"description":"Absolute folder path, e.g. /home/dev/project/app. Canonical aliases share one workspace."});
-    let full = json!({"type":"boolean","default":false,"description":"Prefer false to avoid context pollution. True bypasses the 2000-character preview, not retained-output safety limits."});
+    let full = json!({"type":"boolean","default":false,"description":"Prefer false to avoid context pollution. True bypasses the 1000-character preview, not retained-output safety limits."});
     for tool in &mut definitions {
         if tool["name"]
             .as_str()
@@ -1272,7 +1284,7 @@ fn legacy_tool_definitions() -> Vec<Value> {
         if tool["name"] == "terminal_capture" {
             tool["inputSchema"]["properties"]["full_output"] = full.clone();
             tool["description"] = json!(
-                "Read retained command output, or recent visible screen output for ordinary terminals. Default preview is first 500 plus last 1500 characters. Prefer full_output=false."
+                "Read retained command output, or recent visible screen output for ordinary terminals. Default preview is first 200 plus last 800 characters. Prefer full_output=false."
             );
         }
         if tool["name"] == "terminal_create" {
@@ -1413,12 +1425,8 @@ fn tool_success(result: Value) -> Value {
 }
 
 fn tool_error(message: &str) -> Value {
-    let (message, truncated) = truncate_utf8(message.to_owned(), 8 * 1024);
-    let suffix = if truncated { " [truncated]" } else { "" };
-    json!({
-        "content":[{"type":"text","text":format!("Error: {message}{suffix}")}],
-        "isError":true
-    })
+    let text = crate::output_preview::shorten(&format!("Error: {message}"), 1000);
+    json!({"content":[{"type":"text","text":text}],"isError":true})
 }
 
 fn reject_unknown(arguments: &Map<String, Value>, allowed: &[&str]) -> Result<()> {
@@ -2175,28 +2183,23 @@ mod path_command_tests {
     }
 
     #[test]
-    fn preview_is_exact_unicode_first_500_last_1500() {
-        for len in [0, 100, 2000, 2001, 10000] {
+    fn preview_is_exact_unicode_first_200_last_800() {
+        for len in [0, 100, 1000, 1001, 10000] {
             let text = "🙂".repeat(len);
             let mut value = json!({"output":text});
             limit_output(&mut value, false);
             assert_eq!(
                 value["output"].as_str().unwrap().chars().count(),
-                len.min(2000)
+                len.min(1000)
             );
-            assert_eq!(value["omitted_chars"], len.saturating_sub(2000));
+            assert_eq!(value["omitted_chars"], len.saturating_sub(1000));
         }
-        let text = format!(
-            "{}{}{}",
-            "a".repeat(500),
-            "M".repeat(6000),
-            "z".repeat(1500)
-        );
+        let text = format!("{}{}{}", "a".repeat(200), "M".repeat(6000), "z".repeat(800));
         let mut value = json!({"output":text});
         limit_output(&mut value, false);
         assert_eq!(
             value["output"],
-            format!("{}{}", "a".repeat(500), "z".repeat(1500))
+            format!("{}{}", "a".repeat(200), "z".repeat(800))
         );
         let mut value = json!({"output":text});
         limit_output(&mut value, true);
@@ -2412,13 +2415,18 @@ mod compact_tests {
         let t = TempDir::new().unwrap();
         let c = Arc::new(config(&t));
         let _params = json!({"name":"webterm","arguments":{"cmd":"help write"}});
-        let r = compact_tool_success(execute_cmd(&c, "help write").unwrap());
+        let r = compact_tool_success(execute_cmd(&c, "help write").unwrap(), 1000);
         assert_eq!(r["isError"], false);
-        assert_eq!(
-            serde_json::from_str::<Value>(r["content"][0]["text"].as_str().unwrap()).unwrap(),
-            r["structuredContent"]
+        assert_eq!(r["content"], json!([]));
+        assert!(r["structuredContent"]["commands"].is_array());
+        let output = compact_tool_success(
+            json!({"output":"literal\n界", "terminal_id":17, "exit_code":0}),
+            1000,
         );
-        assert!(!r["content"][0]["text"].as_str().unwrap().contains('\n'));
+        assert_eq!(output["content"], json!([]));
+        assert_eq!(output["structuredContent"]["text"], "literal\n界");
+        assert!(output["structuredContent"].get("output").is_none());
+        assert_eq!(output["structuredContent"]["terminal_id"], 17);
         for args in [
             json!({}),
             json!({"cmd":1}),

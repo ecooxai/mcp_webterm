@@ -27,7 +27,7 @@ def control_main():
         if receipt and code==receipt.get('exit_status',0) and not stderr and raw['output']==receipt['stdout']:
             return receipt['value']
         text=raw['output']; total=raw['output_chars']
-        output=text if len(text)<=2000 else text[:500]+text[-1500:]
+        output=text
         result={'output':output,'exit_code':code,'running':False,'chars':total}
         if total>len(output):result['omitted']=total-len(output)
         if stderr:result['stderr']=stderr

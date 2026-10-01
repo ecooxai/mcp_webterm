@@ -12,7 +12,7 @@ The Colab gateway embeds a measured in-instance uptime panel and an explicit Sta
 
 ## Literal text payloads and fast sign-in
 
-Prefer `webterm({"cmd":"webterm run /home/dev/project/app","text":"code"})` and `webterm({"cmd":"webterm write ID --enter","text":"input"})`. The optional text payload is preserved literally and kept out of outer-shell parsing. Existing Bash pipeline calls work without `text`. The sign-in page now loads independently of the terminal application and is served locally by the Colab gateway. See [the command and sign-in guide](docs/webterm-command.md).
+Prefer `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"code"})` and `webterm({"cmd":"webterm write ID --enter","text":"input"})`. The optional text payload is preserved literally and kept out of outer-shell parsing. Existing Bash pipeline calls work without `text`. The sign-in page now loads independently of the terminal application and is served locally by the Colab gateway. See [the command and sign-in guide](docs/webterm-command.md).
 
 ## Bash-backed compact MCP interface
 
@@ -66,7 +66,7 @@ Configure the WebTerm password through the service environment instead of hard-c
 
 For production, remove `--passwd`, generate an Argon2id PHC string using a trusted offline password tool, store it mode 0600, and set `web_password_hash_file` to that protected path (systemd credentials are preferred). Restarting the service invalidates all in-memory browser sessions. Rotate the separate bearer token independently.
 
-Browser sessions use a Secure, HttpOnly, SameSite=Strict cookie, a fixed expiry, same-origin enforcement, CSRF tokens for logout/mutations, and bounded login rate limiting. See [`docs/http-api.md`](docs/http-api.md) for the stable v1 contract.
+Browser sessions use an in-memory session/CSRF pair, a fixed expiry, same-origin enforcement, CSRF tokens for logout/mutations, and bounded login rate limiting. Authentication headers and the WebSocket subprotocol carry credentials; cookies do not authenticate browser sessions. See [`docs/http-api.md`](docs/http-api.md) for the v1 endpoints.
 
 ## Workspaces
 
@@ -138,7 +138,7 @@ Completed commands return output and exit code; long commands return a running
 terminal handle. `terminal_read` and `terminal_capture` retrieve retained command
 output. Every terminal operation advertises the workspace folder argument.
 
-Above 2000 Unicode characters, default output is exactly first 500 plus last 1500,
+Above 2000 Unicode characters, default output is exactly first 200 plus last 800,
 with omitted-count metadata. Prefer `full_output=false`; true bypasses preview,
 not backend retention. Command records retain first 65536 + last 196608 characters;
 ordinary capture is limited to selected lines (up to 1000) / 256 KiB. The private
@@ -551,3 +551,26 @@ WEBTERM_BIN=/build/cargo-target/debug/webterm \
 WEBTERM_BROWSER=/home/dev/.local/bin/chromium \
 python -m pytest tests/web/test_explorer_live.py -q
 ```
+
+## Workspace-only commands and task continuity
+
+Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"40/100 Progress: parser fixed; verifying the build"})`.
+The workspace parameter sets the working directory for run/python and ordinary Bash, and scopes reads/writes. Do not repeat the path in cmd. Legacy positional paths still work; a conflicting path is rejected before execution.
+
+Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with honest current progress or quality `n/100`, give concrete current status, and contain fewer than 50 words. Do not reset progress to zero on each call or claim completion before testing.
+
+Modern Webterm MCP results contain terminal output in `structuredContent.text`, with `content: []` instead of a duplicate JSON text block. Error text and native image blocks are retained. Hidden legacy tools and the internal CLI/PTY protocol keep their existing keys. Clients must consume structuredContent; old clients that read only content will need updating. Log details also collapse duplicate payloads in historical entries without rewriting stored history.
+
+
+## Portable GitHub releases
+
+Linux x86_64 releases include `webterm-linux-x86_64`, a versioned `.tar.gz` bundle, `BUILD-INFO.json`, and `SHA256SUMS`. The executable is statically linked with musl; Bash and Python 3 are still required for shell/MCP operations. No Rust compiler is needed on the target host. Release building and verification are documented in [docs/releases.md](docs/releases.md).
+
+
+### Short output and error diagnostics (v0.2.2)
+
+Compact command text is limited by default to 1,000 Unicode characters: exactly the first 200 and last 800 when longer. The middle is omitted without rerunning the command. The result includes `omitted` and `read_more`, for example `webterm read 42 --full`. Run/python responses remain capped even with `--full`; use an explicit read to expand retained output, or `read ID --max-chars N` for a chosen budget. The retention limit still applies.
+
+Standard error is included in the returned `text`, not hidden in a separate field. Run commands retain a separate bounded stderr diagnostic copy, so an early error is not lost behind a noisy stdout tail. Both streams still behave as terminals. When diagnostics would otherwise be omitted, they are appended before applying the same preview budget. Filter/control/helper failures include their stderr too. A write reports only a compact receipt; use `webterm read ID` to see the command result, including stderr. The write input is never echoed in the receipt.
+
+Piped controls retain no new terminal: when `source_terminal_id` is available, the read-more hint explicitly refers to the original unfiltered terminal. Controls without an ID do not invent one. Structured lists remain paginated metadata; the preview applies to textual output and error messages. Shortening does not change command exit status.

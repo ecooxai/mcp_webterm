@@ -5,7 +5,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 def exercise(command,evaluate,output):
-    source=Path('.agentwork/cookieless_GPT-6-Astra-Pro_ChatGPT/gateway-static')
+    source=Path(__file__).with_name('fixtures')/'gateway-runtime_GPT-6-Astra-Pro_ChatGPT'
+    for name in ['panel.html','assets.html','webterm-auth.js','runtime.js','runtime.css']:
+        if not (source/name).is_file():raise RuntimeError('Missing runtime browser fixture: '+str(source/name))
     password=secrets.token_urlsafe(20);state={'phase':'stopped','attempts':0,'starts':0,'cookies':0};checks=[]
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass

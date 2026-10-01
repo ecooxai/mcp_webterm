@@ -14,11 +14,13 @@ pub fn apply(command: &str, text: &str, cwd: &Path) -> Result<Value> {
         .args(["-c", include_str!("terminal_filter.py")])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .context("start terminal filter (Python 3 and Bash required)")?;
     let mut stdin = child.stdin.take().context("filter stdin")?;
     let stdout = child.stdout.take().context("filter stdout")?;
+    let stderr = child.stderr.take().context("helper stderr")?;
+    let stderr_reader = std::thread::spawn(move || crate::output_preview::drain_stderr(stderr));
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
@@ -31,7 +33,14 @@ pub fn apply(command: &str, text: &str, cwd: &Path) -> Result<Value> {
         let _ = child.wait();
         drop(stdin);
         let _ = reader.join();
-        return Err(e).context("write filter snapshot");
+        let diagnostic = stderr_reader
+            .join()
+            .ok()
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
+        return Err(e)
+            .context(format!("helper input failed; stderr: {diagnostic}"))
+            .context("write filter snapshot");
     }
     drop(stdin);
     let began = Instant::now();
@@ -43,15 +52,24 @@ pub fn apply(command: &str, text: &str, cwd: &Path) -> Result<Value> {
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
-            bail!("Terminal filter helper timed out");
+            let stderr = stderr_reader
+                .join()
+                .ok()
+                .and_then(|result| result.ok())
+                .unwrap_or_default();
+            bail!("Terminal filter helper timed out\n[stderr]\n{stderr}");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let bytes = reader
         .join()
         .map_err(|_| anyhow::anyhow!("filter output reader failed"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr reader failed"))??;
     if !exit.success() || bytes.len() > 4 * 1024 * 1024 {
-        bail!("Terminal filter failed or returned oversized data");
+        bail!("Terminal filter failed or returned oversized data\n[stderr]\n{stderr}");
     }
-    serde_json::from_slice(&bytes).context("decode terminal filter result")
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("decode terminal filter result\n[stderr]\n{stderr}"))
 }

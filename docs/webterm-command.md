@@ -92,3 +92,21 @@ Run `cargo test --locked`, `cargo build --locked --all-targets`, and `python3 te
 For write, use `cmd: "webterm write 12 --enter"` and put literal terminal input in `text`. Explicit attribution wins over legacy inline `--task`/`--summary`; metadata is never evaluated as shell source. Concurrent calls carry independent child-process contexts. Both native WebTerm and the Colab gateway log the fields. Calls without the new fields remain compatible.
 
 Workspace sidebar: single click or Enter/Space folds/unfolds only. Rapid double-click/tap activates the workspace. Three nearby clicks/taps also activate it. The third click after a double-click cannot collapse it again.
+
+## Workspace-only commands and task continuity
+
+Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"40/100 Progress: parser fixed; verifying the build"})`.
+The workspace parameter sets the working directory for run/python and ordinary Bash, and scopes reads/writes. Do not repeat the path in cmd. Legacy positional paths still work; a conflicting path is rejected before execution.
+
+Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with honest current progress or quality `n/100`, give concrete current status, and contain fewer than 50 words. Do not reset progress to zero on each call or claim completion before testing.
+
+Modern Webterm MCP results contain terminal output in `structuredContent.text`, with `content: []` instead of a duplicate JSON text block. Error text and native image blocks are retained. Hidden legacy tools and the internal CLI/PTY protocol keep their existing keys. Clients must consume structuredContent; old clients that read only content will need updating. Log details also collapse duplicate payloads in historical entries without rewriting stored history.
+
+
+### Short output and error diagnostics (v0.2.2)
+
+Compact command text is limited by default to 1,000 Unicode characters: exactly the first 200 and last 800 when longer. The middle is omitted without rerunning the command. The result includes `omitted` and `read_more`, for example `webterm read 42 --full`. Run/python responses remain capped even with `--full`; use an explicit read to expand retained output, or `read ID --max-chars N` for a chosen budget. The retention limit still applies.
+
+Standard error is included in the returned `text`, not hidden in a separate field. Run commands retain a separate bounded stderr diagnostic copy, so an early error is not lost behind a noisy stdout tail. Both streams still behave as terminals. When diagnostics would otherwise be omitted, they are appended before applying the same preview budget. Filter/control/helper failures include their stderr too. A write reports only a compact receipt; use `webterm read ID` to see the command result, including stderr. The write input is never echoed in the receipt.
+
+Piped controls retain no new terminal: when `source_terminal_id` is available, the read-more hint explicitly refers to the original unfiltered terminal. Controls without an ID do not invent one. Structured lists remain paginated metadata; the preview applies to textual output and error messages. Shortening does not change command exit status.

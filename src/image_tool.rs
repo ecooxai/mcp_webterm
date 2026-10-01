@@ -94,7 +94,7 @@ pub fn read(config: &Config, workspace: &str, path: &str) -> Result<Value> {
         .context("image is corrupt or exceeds decoder limits")?;
     let data = json!({"workspace_id":root,"path":canonical,"mime_type":mime,"bytes":bytes.len(),"width":width,"height":height});
     Ok(
-        json!({"isError":false,"structuredContent":data,"content":[{"type":"text","text":serde_json::to_string(&data)?},{"type":"image","mimeType":mime,"data":STANDARD.encode(&bytes)}]}),
+        json!({"isError":false,"structuredContent":data,"content":[{"type":"image","mimeType":mime,"data":STANDARD.encode(&bytes)}]}),
     )
 }
 
@@ -125,10 +125,10 @@ mod tests {
         fs::write(d.path().join("different.ext"), &raw).unwrap();
         let v = read(&c, d.path().to_str().unwrap(), "different.ext").unwrap();
         assert_eq!(v["structuredContent"]["width"], 3);
-        assert_eq!(v["content"][1]["mimeType"], "image/png");
+        assert_eq!(v["content"][0]["mimeType"], "image/png");
         assert_eq!(
             STANDARD
-                .decode(v["content"][1]["data"].as_str().unwrap())
+                .decode(v["content"][0]["data"].as_str().unwrap())
                 .unwrap(),
             raw
         );

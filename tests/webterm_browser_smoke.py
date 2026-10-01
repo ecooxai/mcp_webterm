@@ -44,8 +44,19 @@ def smoke(base, password, root, output):
             if proc.poll() is not None:raise RuntimeError('Chrome exited during startup')
             time.sleep(.05)
         port=int(portfile.read_text().splitlines()[0])
-        targets=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=5))
-        target=next(x for x in targets if x['type']=='page')
+        # DevToolsActivePort can appear before about:blank has a page target.
+        # Wait for actual target readiness instead of racing browser startup.
+        target=None
+        for _ in range(200):
+            try:
+                targets=json.load(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list',timeout=5))
+                target=next((x for x in targets if x['type']=='page'),None)
+            except (OSError, ValueError):
+                pass
+            if target:break
+            if proc.poll() is not None:raise RuntimeError('Chrome exited before its page target was ready')
+            time.sleep(.05)
+        if target is None:raise RuntimeError('Chrome did not expose a page target within the startup deadline')
         ws=websocket.create_connection(target['webSocketDebuggerUrl'],timeout=15,suppress_origin=True)
         command('Page.enable');command('Runtime.enable')
         command('Network.clearBrowserCookies')

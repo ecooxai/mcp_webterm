@@ -110,10 +110,12 @@ pub fn execute_with_metadata(
         .args(["-c", &helper])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .context("start Bash control helper")?;
     let stdout = child.stdout.take().context("helper stdout")?;
+    let stderr = child.stderr.take().context("helper stderr")?;
+    let stderr_reader = std::thread::spawn(move || crate::output_preview::drain_stderr(stderr));
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout
@@ -127,7 +129,12 @@ pub fn execute_with_metadata(
         let _ = child.wait();
         drop(stdin);
         let _ = reader.join();
-        return Err(e.into());
+        let diagnostic = stderr_reader
+            .join()
+            .ok()
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
+        return Err(e).context(format!("helper input failed; stderr: {diagnostic}"));
     }
     drop(stdin);
     let began = Instant::now();
@@ -139,17 +146,28 @@ pub fn execute_with_metadata(
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
-            bail!("Bash control helper exceeded its deadline; use webterm run for long work");
+            let stderr = stderr_reader
+                .join()
+                .ok()
+                .and_then(|result| result.ok())
+                .unwrap_or_default();
+            bail!(
+                "Bash control helper exceeded its deadline; do not rerun automatically\n[stderr]\n{stderr}"
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let bytes = reader
         .join()
         .map_err(|_| anyhow::anyhow!("Bash output reader failed"))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr reader failed"))??;
     if !exit.success() || bytes.len() > 4 * 1024 * 1024 {
-        bail!("Bash control helper failed or returned excessive data");
+        bail!("Bash control helper failed or returned excessive data\n[stderr]\n{stderr}");
     }
-    let value: Value = serde_json::from_slice(&bytes).context("decode Bash control result")?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decode Bash control result\n[stderr]\n{stderr}"))?;
     if let Some(e) = value.get("native_error").and_then(Value::as_str) {
         bail!("{e}");
     }
@@ -228,7 +246,7 @@ pub fn native(config: &Config, args: &[String]) -> Result<()> {
             let mut full_args = args.to_vec();
             // Render raw output before pipes. Explicit budgets remain opt-in.
             if !parsed.full
-                && parsed.max_chars == 2000
+                && parsed.max_chars == crate::output_preview::DEFAULT_CHARS
                 && !args.iter().any(|v| v.starts_with("--max-chars"))
             {
                 full_args.push("--full".into());

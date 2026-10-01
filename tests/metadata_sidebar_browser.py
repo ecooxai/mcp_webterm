@@ -75,6 +75,16 @@ def navigation(command,evaluate,output):
         if log_row:break
         time.sleep(.1)
     expect('log UI shows workspace task and complete progress summary',bool(log_row and log_row['task']=='Metadata read' and log_row['workspace'].startswith('/') and len(log_row['summary'].split())==49))
+    evaluate("(()=>{const s=[...document.querySelectorAll('.log-summary')].find(x=>x.textContent.startsWith('56/100 '));const card=s.closest('article');card.scrollIntoView({block:'start'});card.querySelector('.tool-log-row').click();})()")
+    payload=None
+    for _ in range(60):
+        payload=evaluate("""(()=>{const s=[...document.querySelectorAll('.log-summary')].find(x=>x.textContent.startsWith('56/100 '));const sections=[...s.closest('article').querySelectorAll('.tool-log-details section')];const p=sections.find(x=>x.querySelector('h3')?.textContent==='Output')?.querySelector('pre');const i=sections.find(x=>x.querySelector('h3')?.textContent==='Input')?.querySelector('pre');if(!p||!i)return null;try{return{output:JSON.parse(p.textContent),input:JSON.parse(i.textContent)};}catch{return null;}})()""")
+        if payload:break
+        time.sleep(.1)
+    expect('expanded log shows terminal text once without MCP wrapper duplication', bool(payload and isinstance(payload['output'].get('text'),str) and 'output' not in payload['output'] and 'content' not in payload['output'] and 'structuredContent' not in payload['output']))
+    expect('expanded log input preserves workspace parameter without synthetic duplicate', bool(payload and 'workspace' in payload['input'] and 'workspace_id' not in payload['input']))
+    historical=evaluate("""(()=>{const original={output:'HISTORICAL_SENTINEL',exit_code:0};return window.WebTermLog.formatOutput({isError:false,structuredContent:original,content:[{type:'text',text:JSON.stringify(original)}]});})()""")
+    expect('historical duplicate output is rendered once as text', historical=={'text':'HISTORICAL_SENTINEL','exit_code':0})
     shot=command('Page.captureScreenshot',{'format':'png','captureBeyondViewport':False})
     (Path(output)/'metadata-log-desktop.png').write_bytes(base64.b64decode(shot['data']))
     evaluate("window.WebTermLog.close()")

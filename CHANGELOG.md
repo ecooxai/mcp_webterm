@@ -13,6 +13,7 @@
 - Ignore nested directories, symlinks, non-shell files, oversized/unreadable scripts,
   and retry transient startup failures without reserving duplicate terminals.
 - Add isolated process, browser, static-release, and live-instance autoboot regressions.
+- Package v0.2.3 for the normal GNU/glibc Linux ABI and record its GLIBC symbol requirement and shared libraries in build metadata.
 
 ## 0.2.2 - 2026-10-01
 

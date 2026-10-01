@@ -1,45 +1,21 @@
-# Building and publishing portable releases
+# Building and publishing Linux releases
 
-Linux x86_64 releases target `x86_64-unknown-linux-musl`. The package script
-rejects an ELF interpreter or `DT_NEEDED` entries, checks the executable version,
-and records the exact Git commit, Rust compiler and SHA-256 in BUILD-INFO.json.
-Bash and Python 3 are runtime requirements for shell/MCP execution, not bundled
-libraries. A Rust compiler is not needed to run the downloaded executable.
+Linux x86_64 releases target `x86_64-unknown-linux-gnu` and use the system **glibc** ABI. The package helper verifies an ELF interpreter and `libc.so.6`, then records the required GLIBC symbol version, shared libraries, exact Git commit, compiler, and SHA-256 in BUILD-INFO.json. A Rust compiler is not needed on the target host. Bash and Python 3 remain runtime requirements.
 
-Build prerequisites: a Rust toolchain supporting the package, the musl target,
-`musl-gcc` (Debian/Ubuntu: `musl-tools`), Python 3.11+, Git, binutils, tar and gzip.
+Build prerequisites: a standard Rust toolchain, GNU C/linker toolchain, Python 3.11+, Git, binutils, tar, gzip, and sha256sum. No musl toolchain is required.
 
 ```sh
-rustup target add x86_64-unknown-linux-musl
 cargo test --locked
 node tests/command_log_format.cjs
 # Commit the intended source first: release packaging requires a clean checkout.
-deploy/build-release.sh /absolute/output/directory
+CARGO_TARGET_DIR=/build/cargo-target deploy/build-release.sh /absolute/output/directory
 ```
 
-Use CARGO_TARGET_DIR to keep compiler intermediates outside persistent source
-storage. A relocated musl installation may supply
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER and
-CC_x86_64_unknown_linux_musl explicitly. These must point to a working toolchain;
-the release script does not modify host configuration or install dependencies.
+The output contains `webterm-linux-x86_64`, a versioned tarball, BUILD-INFO.json, SHA256SUMS, and release notes. Verify `sha256sum -c SHA256SUMS` before installation. Check BUILD-INFO.json before deploying to an older distribution: `glibc_required_symbol_version` records the newest GLIBC symbol required by the binary, and `needed_libraries` records dynamic dependencies.
 
-The output contains the compatibility-named executable `webterm-linux-x86_64`,
-a versioned tarball with install/configuration guidance, BUILD-INFO.json,
-SHA256SUMS, and release notes. Verify `sha256sum -c SHA256SUMS` before installation.
-The source commit time is used for tar entry timestamps, but different compilers
-or build environments can still produce different executable hashes.
+Bump Cargo.toml and the root package in Cargo.lock, add a CHANGELOG.md section, validate the exact release binary, commit, and push the source. Publish verified assets with `gh release create vX.Y.Z --target COMMIT`, passing the executable, tarball, BUILD-INFO.json and SHA256SUMS. The release tag must match the package version and the source commit recorded in BUILD-INFO.json. Do not overwrite assets from an existing published release.
 
-Bump Cargo.toml and the root package in Cargo.lock, add a CHANGELOG.md section,
-validate the exact release binary, commit, and push the source. Publish the
-verified assets manually with `gh release create vX.Y.Z --target COMMIT`, passing
-the executable, tarball, BUILD-INFO.json and SHA256SUMS as asset arguments. The
-release tag must match the package version and the source commit recorded in
-BUILD-INFO.json. Do not overwrite assets from an existing published release.
-
-The repository's existing tag-push workflow is a legacy GNU-target build and
-does not use this static packaging helper. Updating that workflow requires
-GitHub workflow-write permission; it is intentionally unchanged in v0.2.2.
-Do not rely on that legacy workflow for portable musl release artifacts.
+The existing tag workflow also uses Rust's default GNU/glibc target. The manual helper adds the tarball and build metadata used for verified releases. Updating workflow files may require separate GitHub workflow-write permission.
 
 Full local regression coverage, including real PTYs, Chrome and proxies:
 
@@ -49,9 +25,7 @@ WEBTERM_TEST_REPORT=/absolute/evidence/integration.json \
 python3 tests/unified_webterm_integration.py
 ```
 
-This suite additionally requires Google Chrome, websocket-client for Python,
-and writable temporary/build paths. It starts isolated services and never
-reuses the production database or personal browser profile.
+The suite additionally requires Google Chrome, websocket-client for Python, and writable temporary/build paths. It starts isolated services and never reuses the production database or personal browser profile.
 
 
 ### Short output and error diagnostics (v0.2.2)

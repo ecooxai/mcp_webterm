@@ -564,7 +564,7 @@ Modern Webterm MCP results contain terminal output in `structuredContent.text`, 
 
 ## Portable GitHub releases
 
-Linux x86_64 releases include `webterm-linux-x86_64`, a versioned `.tar.gz` bundle, `BUILD-INFO.json`, and `SHA256SUMS`. The executable is statically linked with musl; Bash and Python 3 are still required for shell/MCP operations. No Rust compiler is needed on the target host. Release building and verification are documented in [docs/releases.md](docs/releases.md).
+Linux x86_64 releases include `webterm-linux-x86_64`, a versioned `.tar.gz` bundle, `BUILD-INFO.json`, and `SHA256SUMS`. The executable uses the normal GNU/glibc Linux ABI; Bash and Python 3 are still required for shell/MCP operations. No Rust compiler is needed on the target host. Check `BUILD-INFO.json` for the required GLIBC symbol version and shared libraries. Release building and verification are documented in [docs/releases.md](docs/releases.md).
 
 
 ### Short output and error diagnostics (v0.2.2)

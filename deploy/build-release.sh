@@ -14,35 +14,36 @@ if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
 fi
 commit=$(git rev-parse HEAD)
 epoch=$(git show -s --format=%ct HEAD)
-target=x86_64-unknown-linux-musl
+target=x86_64-unknown-linux-gnu
 output=${1:-"$root/dist/release-v$version"}
 mkdir -p -- "$output"
 output=$(cd -- "$output" && pwd)
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-"$root/target"}
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER:-musl-gcc}
-export CC_x86_64_unknown_linux_musl=${CC_x86_64_unknown_linux_musl:-$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER}
-command -v "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER" >/dev/null || { echo 'musl-gcc is required; install musl-tools or set the target linker.' >&2; exit 1; }
 cargo build --release --locked --target "$target"
 binary="$CARGO_TARGET_DIR/$target/release/webterm"
-program_headers=$(readelf -l "$binary")
-dynamic_section=$(readelf -d "$binary")
-if [[ "$program_headers" == *INTERP* || "$dynamic_section" == *NEEDED* ]]; then
-  echo 'Refusing a release with an ELF interpreter or shared-library dependency.' >&2
+interpreter=$(readelf -l "$binary" | sed -n 's/.*Requesting program interpreter: \([^]]*\)\].*/\1/p' | head -n 1)
+needed=$(readelf -d "$binary" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+if [[ -z "$interpreter" || "$needed" != *libc.so.6* ]]; then
+  echo 'Refusing a GNU release that is not dynamically linked against glibc libc.so.6.' >&2
   exit 1
 fi
+glibc_required=$(readelf --version-info "$binary" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)*' | sort -Vu | tail -n 1 || true)
+needed_csv=$(printf '%s\n' "$needed" | paste -sd, -)
 [[ "$("$binary" --version)" == "webterm $version" ]] || { echo 'Binary version does not match Cargo.toml' >&2; exit 1; }
 install -m 0755 -- "$binary" "$output/webterm-linux-x86_64"
-python3 - "$output" "$version" "$commit" "$target" "$epoch" <<'PY'
+python3 - "$output" "$version" "$commit" "$target" "$epoch" "$interpreter" "$glibc_required" "$needed_csv" <<'PY'
 import hashlib,json,subprocess,sys
 from pathlib import Path
-out=Path(sys.argv[1]);version,commit,target,epoch=sys.argv[2:]
+out=Path(sys.argv[1]);version,commit,target,epoch,interpreter,glibc_required,needed_csv=sys.argv[2:]
 binary=out/'webterm-linux-x86_64'
 with binary.open('rb') as f:sha=hashlib.file_digest(f,'sha256').hexdigest()
 info={'project':'webterm','version':version,'git_commit':commit,'target':target,
-      'source_commit_time_unix':int(epoch),'source_dirty':False,'linkage':'static musl',
+      'source_commit_time_unix':int(epoch),'source_dirty':False,'linkage':'dynamic glibc',
+      'elf_interpreter':interpreter,'glibc_required_symbol_version':glibc_required or None,
+      'needed_libraries':[x for x in needed_csv.split(',') if x],
       'rustc':subprocess.check_output(['rustc','--version'],text=True).strip(),
       'binary_sha256':sha,'binary_bytes':binary.stat().st_size,
-      'runtime_requirements':['Linux x86_64','Bash','Python 3 for shell/MCP operations']}
+      'runtime_requirements':['Linux x86_64', ('glibc >= '+glibc_required.removeprefix('GLIBC_')) if glibc_required else 'compatible glibc', 'Bash','Python 3 for shell/MCP operations']}
 (out/'BUILD-INFO.json').write_text(json.dumps(info,indent=2)+'\n')
 changelog=Path('CHANGELOG.md').read_text();heading='## '+version+' '
 sections=changelog.split('\n## ')
@@ -60,9 +61,10 @@ install -m 0644 -- deploy/webterm.toml.example deploy/webterm.service deploy/web
 cat > "$stage/$bundle/INSTALL.md" <<'INSTALL'
 # WebTerm Linux x86_64
 
-This executable is statically linked with musl and does not require a particular
-host glibc version or a Rust compiler. Shell/MCP operations still require Bash
-and Python 3. This bundle does not include those interpreters.
+This executable uses the normal GNU/Linux ABI and is dynamically linked against
+glibc. The target host must provide compatible glibc and the shared libraries
+listed in BUILD-INFO.json. A Rust compiler is not required. Shell/MCP operations
+still require Bash and Python 3; this bundle does not include those interpreters.
 
 Verify the downloaded files with `sha256sum -c SHA256SUMS`, extract the archive,
 and run `./webterm --version`. Install the executable in a directory on PATH.

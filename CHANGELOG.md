@@ -1,3 +1,7 @@
+## 0.2.1
+
+- Publish Linux x86_64 releases as static musl binaries so they run on older glibc hosts.
+
 # Changelog
 
 ## 0.2.0 - 2026-09-29

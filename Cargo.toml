@@ -1,6 +1,6 @@
 [package]
 name = "webterm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Persistent named terminal workspaces"
 license = "MIT"
@@ -34,7 +34,7 @@ url = "2.5"
 
 tokio-util = { version = "0.7", features = ["io"] }
 
-[target.'cfg(target_env = "gnu")'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]

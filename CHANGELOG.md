@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-10-05
+
+- Rebuild and publish the current WebTerm source for Linux x86_64 using GNU/glibc, with commit metadata and verified SHA-256 checksums.
+- Retain the v0.2.3 feature set, including managed autoboot scripts and compact terminal output.
+
 ## 0.2.3 - 2026-10-01
 
 - Start and watch top-level `~/project/autoboot/*.sh` files after a 10-second delay,

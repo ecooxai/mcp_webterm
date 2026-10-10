@@ -345,19 +345,19 @@ try:
     check('ordinary Bash survives tool return',not finished['running'] and finished['text']=='ordinary-async')
     timeout=shell('webterm status >/dev/null; sleep 26')
     check('control wrapper has explicit timeout status',timeout['exit_code']==124 and timeout.get('timed_out') is True)
-    # Verify all-full runtime control: controls must work even when every PTY
-    # slot is occupied. No other runtime is involved; this fixture is isolated.
+    # The runtime has no fixed terminal cap (formerly 32): creating 40 extra
+    # terminals must succeed and controls must keep working. Isolated fixture.
     filled=[]
     try:
         for _ in range(40):
             r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':f'webterm new {qo}'}})['result']
             if r.get('isError'):break
             n=r['structuredContent']['terminal_id'];filled.append(n);created.append((other,n))
-        check('isolated fixture reaches PTY capacity',len(filled)<40)
+        check('runtime creates more than 32 terminals',len(filled)==40,len(filled))
         result=shell(f'webterm read {done["terminal_id"]} | grep first')
-        check('read pipelines work at full PTY capacity',result['text']=='first\n')
+        check('read pipelines work with many terminals',result['text']=='first\n')
         result=shell('webterm ls terminals --limit 1')
-        check('listing works at full PTY capacity',len(result['terminals'])==1)
+        check('listing works with many terminals',len(result['terminals'])==1)
     finally:
         for n in filled:shell(f'webterm stop {n}')
 

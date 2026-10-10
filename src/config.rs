@@ -21,6 +21,13 @@ pub struct Config {
     pub auth_token_file: Option<PathBuf>,
     pub web_password_hash_file: Option<PathBuf>,
     pub web_session_ttl_seconds: u64,
+    /// Seconds without input, output, resize or attached viewers before the
+    /// runtime moves a terminal's screen to disk and retires an idle shell.
+    /// Zero disables hibernation.
+    pub runtime_idle_seconds: u64,
+    /// Preferred folder for hibernated terminal screens. Falls back to
+    /// /tmp, the runtime state folder and ~/.cache when full or unwritable.
+    pub runtime_swap_dir: Option<PathBuf>,
     #[serde(skip_serializing)]
     pub auth_token: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
@@ -46,6 +53,8 @@ impl Default for Config {
             auth_token_file: None,
             web_password_hash_file: None,
             web_session_ttl_seconds: 28_800,
+            runtime_idle_seconds: 3_600,
+            runtime_swap_dir: None,
             auth_token: None,
             web_password: None,
         }
@@ -79,6 +88,13 @@ impl Config {
         if let Some(value) = env::var_os("WEBTERM_TMUX_SOCKET") {
             config.tmux_socket = value.into();
         }
+        if let Ok(value) = env::var("WEBTERM_IDLE_SECONDS") {
+            config.runtime_idle_seconds =
+                value.trim().parse().context("parse WEBTERM_IDLE_SECONDS")?;
+        }
+        if let Some(value) = env::var_os("WEBTERM_SWAP_DIR") {
+            config.runtime_swap_dir = Some(value.into());
+        }
         if let Ok(value) = env::var("WEBTERM_AUTH_TOKEN") {
             config.auth_token = Some(normalize_token(value, "WEBTERM_AUTH_TOKEN")?);
         } else if let Some(path) = &config.auth_token_file {
@@ -110,6 +126,11 @@ impl Config {
             {
                 bail!("autoboot_dir must be an absolute folder without .. components");
             }
+        }
+        if let Some(path) = &self.runtime_swap_dir
+            && !path.is_absolute()
+        {
+            bail!("runtime_swap_dir must be an absolute path");
         }
         validate_runtime_socket(&self.runtime_socket)?;
         if self.runtime_socket == self.tmux_socket {

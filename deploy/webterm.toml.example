@@ -8,6 +8,13 @@ auth_token_file = "/etc/webterm/token"
 web_password_hash_file = "/run/credentials/webterm.service/webterm-password-hash"
 web_session_ttl_seconds = 28800
 
+# Terminals with no input, output, resize or attached viewer for this many seconds
+# have their screen/scrollback moved to disk. Shells idle at a prompt (no child
+# processes) are also retired and transparently restarted in the same folder on
+# next use. 0 disables. Overrides: WEBTERM_IDLE_SECONDS, WEBTERM_SWAP_DIR.
+runtime_idle_seconds = 3600
+# runtime_swap_dir = "/var/tmp/webterm-swap" # default: /tmp, then state dir, then ~/.cache
+
 # After the HTTP frontend is ready, wait 10 seconds, then open ~/project/autoboot.
 # Its top-level .sh files run in filename-named terminals; edits restart, deletion removes.
 # Only folders within workspace_roots are allowed. Symlinked scripts are ignored.

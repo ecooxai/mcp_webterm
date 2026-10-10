@@ -1613,8 +1613,9 @@ fn load_workspace_tree(config: &Config) -> Result<Vec<WorkspaceTree>> {
     let database = Database::open_config(config)?;
     let manager = TerminalManager::new(config)?;
     let mut terminals = database.list_terminals(None)?;
+    let live = manager.live_sessions(terminals.iter().map(|t| t.tmux_session.as_str()))?;
     for terminal in &mut terminals {
-        let status = if manager.has_session(&terminal.tmux_session)? {
+        let status = if live.get(&terminal.tmux_session).copied().unwrap_or(false) {
             "running"
         } else if terminal.status == "starting"
             && unix_timestamp()?.saturating_sub(terminal.updated_at) < STARTING_GRACE_SECONDS

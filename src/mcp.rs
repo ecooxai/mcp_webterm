@@ -480,7 +480,15 @@ fn compact_list(config: &Config, cmd: &crate::webterm_cmd::Parsed) -> Result<Val
             .iter()
             .filter(|t| paths.contains_key(&t.workspace_id))
             .collect::<Vec<_>>();
-        let selected = visible.iter().skip(cmd.offset).take(cmd.limit).map(|t|json!({"terminal_id":t.id,"workspace_id":paths[&t.workspace_id],"name":t.name,"status":if manager.has_session(t.session_id()).unwrap_or(false){"running"}else{"stopped"}})).collect::<Vec<_>>();
+        let page = visible
+            .iter()
+            .skip(cmd.offset)
+            .take(cmd.limit)
+            .collect::<Vec<_>>();
+        let live = manager
+            .live_sessions(page.iter().map(|t| t.session_id()))
+            .unwrap_or_default();
+        let selected = page.iter().map(|t|json!({"terminal_id":t.id,"workspace_id":paths[&t.workspace_id],"name":t.name,"status":if live.get(t.session_id()).copied().unwrap_or(false){"running"}else{"stopped"}})).collect::<Vec<_>>();
         let next = cmd.offset + selected.len();
         let mut value = json!({"terminals":selected,"total":visible.len()});
         if next < visible.len() {
@@ -492,8 +500,17 @@ fn compact_list(config: &Config, cmd: &crate::webterm_cmd::Parsed) -> Result<Val
         let workspace = workspace_arg(config, &cmd.args, false)?.context("workspace required")?;
         let terminals = database.list_terminals(Some(workspace.id))?;
         let total = terminals.len();
+        let live = manager
+            .live_sessions(
+                terminals
+                    .iter()
+                    .skip(cmd.offset)
+                    .take(cmd.limit)
+                    .map(|t| t.session_id()),
+            )
+            .unwrap_or_default();
         let selected = terminals.iter().skip(cmd.offset).take(cmd.limit).map(|t| {
-            let alive = manager.has_session(t.session_id()).unwrap_or(false);
+            let alive = live.get(t.session_id()).copied().unwrap_or(false);
             json!({"terminal_id":t.id,"name":t.name,"status":if alive {"running"} else {"stopped"}})
         }).collect::<Vec<_>>();
         let next = cmd.offset + selected.len();
@@ -600,10 +617,11 @@ fn tool_status(config: &Config, arguments: &Map<String, Value>) -> Result<Value>
     let db = Database::open_config(config)?;
     let runtime_ready = std::os::unix::net::UnixStream::connect(&config.runtime_socket).is_ok();
     let running = if runtime_ready {
-        db.list_terminals(None)?
-            .iter()
-            .filter(|t| manager.has_session(t.session_id()).unwrap_or(false))
-            .count()
+        let terminals = db.list_terminals(None)?;
+        manager
+            .live_sessions(terminals.iter().map(|t| t.session_id()))
+            .map(|live| live.values().filter(|alive| **alive).count())
+            .unwrap_or(0)
     } else {
         0
     };

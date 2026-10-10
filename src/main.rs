@@ -33,6 +33,8 @@ enum Command {
     Serve,
     /// Run the native PTY runtime daemon in the foreground.
     Runtime,
+    /// Print native runtime counters (sessions, hibernated shells, swapped screens) as JSON.
+    RuntimeStats,
     /// Print the effective non-secret configuration.
     Config,
     /// List workspaces, with their terminals nested underneath.
@@ -187,7 +189,15 @@ async fn main() -> Result<()> {
         Command::Serve => serve(config).await,
         Command::Runtime => {
             config.ensure_state_dirs()?;
-            runtime::serve(&config.runtime_socket)
+            runtime::serve(
+                &config.runtime_socket,
+                runtime::RuntimeOptions::from_config(&config),
+            )
+        }
+        Command::RuntimeStats => {
+            let stats = runtime::RuntimeClient::new(&config.runtime_socket)?.stats()?;
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+            Ok(())
         }
         Command::Config => {
             println!("{}", toml::to_string_pretty(&config)?);
@@ -436,10 +446,12 @@ fn resolve_terminal(database: &Database, workspace: &str, terminal: &str) -> Res
 }
 
 fn reconcile_all(database: &Database, manager: &TerminalManager) -> Result<()> {
-    for terminal in database.list_terminals(None)? {
-        // An unreachable backend is an error, not evidence that a live record
-        // stopped. Propagate it without changing this record's status.
-        let actual = if manager.has_session(terminal.session_id())? {
+    let terminals = database.list_terminals(None)?;
+    // An unreachable backend is an error, not evidence that a live record
+    // stopped. Propagate it without changing any record's status.
+    let live = manager.live_sessions(terminals.iter().map(|t| t.session_id()))?;
+    for terminal in terminals {
+        let actual = if live.get(terminal.session_id()).copied().unwrap_or(false) {
             "running"
         } else {
             "stopped"

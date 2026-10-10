@@ -58,7 +58,7 @@ tool contract.
 
 Install `deploy/7681-webterm.caddy` in the Caddy configuration and validate before reloading. The policy deliberately permits inline styles because xterm.js computes terminal geometry with runtime style attributes; scripts remain restricted to same-origin vendored files. Do not add proxy Basic Auth: the application provides the required password-only login and session/CSRF controls.
 
-Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LISTEN`, `WEBTERM_DATABASE_PATH`, `WEBTERM_RUNTIME_SOCKET`, `WEBTERM_TMUX_SOCKET`, and `WEBTERM_AUTH_TOKEN` are environment overrides. The native runtime socket must be an absolute private Unix-socket path distinct from the database and legacy tmux socket. The default listen address is `0.0.0.0:10000` (all interfaces).
+Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LISTEN`, `WEBTERM_DATABASE_PATH`, `WEBTERM_RUNTIME_SOCKET`, `WEBTERM_TMUX_SOCKET`, `WEBTERM_IDLE_SECONDS`, `WEBTERM_SWAP_DIR`, and `WEBTERM_AUTH_TOKEN` are environment overrides. The native runtime socket must be an absolute private Unix-socket path distinct from the database and legacy tmux socket. The default listen address is `0.0.0.0:10000` (all interfaces).
 
 ## Browser authentication
 
@@ -101,7 +101,7 @@ Run `webterm --config /etc/webterm/webterm.toml tui` (or omit the command) for t
 
 ## Native runtime limits
 
-The daemon exposes only a private Unix socket (mode 0600); child shells retain ordinary network access. It owns up to 32 native terminals and 16 attached viewers per terminal. Screen dimensions are bounded to 512 columns by 256 rows, with 500 retained history rows. Current-screen ANSI state is preserved on reconnect; older history is replayed as plain text. Slow viewers are disconnected without blocking the terminal, and blocked input requests time out rather than holding the entire runtime.
+The daemon exposes only a private Unix socket (mode 0600); child shells retain ordinary network access. There is no fixed terminal count: the daemon raises its descriptor limit and uses small thread stacks and event-driven (non-polling) PTY readers, so thousands of mostly idle terminals cost little CPU or RAM (see `tests/runtime_stress.py`, which checks 2000). Each terminal accepts 16 attached viewers. Screen dimensions are bounded to 512 columns by 256 rows, with 500 retained history rows. Current-screen ANSI state is preserved on reconnect; older history is replayed as plain text. Slow viewers are disconnected without blocking the terminal, and blocked input requests time out rather than holding the entire runtime.
 
 The default login shell restarts after exit with a one-second delay and no command replay. Use Stop/Delete to permanently close a terminal. Local CLI attachment uses Ctrl-] to detach and restores the caller's TTY settings.
 
@@ -112,6 +112,12 @@ The bottom status strip contains host CPU/RAM and terminal shortcuts, with horiz
 Browser disconnects, mobile backgrounding and HTTP-service restarts detach clients rather than stop native PTYs. WebSockets use bounded I/O, and the runtime maintains the canonical terminal screen/history independently of viewers. Use the explicit Stop/Delete action for permanent termination. Native processes do not survive a host or native-runtime failure.
 
 Native resize is runtime-owned and broadcast to all viewers with a canonical snapshot. Legacy tmux windows resume automatic sizing to the latest client. An inset xterm host prevents the final row from being clipped behind the footer. Deploy the supplied HTTP unit without `ProcSubset=pid` so host metrics are readable; keep the legacy tmux service untouched while either transitional session remains. Reload Caddy only after validating the complete active configuration. Browser sessions are in memory, so an HTTP-service restart requires signing in again.
+
+### Idle terminals
+
+A terminal with no input, output, resize or attached viewer for `runtime_idle_seconds` (default 3600; `0` disables; `WEBTERM_IDLE_SECONDS`) is moved out of RAM: its screen and history are written to a private mode-0600 file and the in-memory grid is released. If the shell is sitting at a prompt with no other processes in its session, the shell is also ended; the terminal stays listed and the next input or viewer restores the screen and starts a new shell in the last working directory. Terminals running jobs keep their processes and only the screen is swapped.
+
+Swap files go to `runtime_swap_dir` / `WEBTERM_SWAP_DIR` if set, otherwise `$TMPDIR/webterm-swap-<uid>` (normally `/tmp`), then `/var/tmp/webterm-swap-<uid>`, then `swap/` next to the runtime socket, then `~/.cache/webterm/swap`, each with a per-runtime subfolder. A folder that is full, unwritable, not owned by the runtime user or a symlink is skipped. Files are deleted on resume, stop, and runtime start. `webterm runtime-stats` prints session, dormant and swapped counts.
 
 ## Native runtime end-to-end verification
 

@@ -2,6 +2,7 @@
 """Isolated real-PTY + MCP/CLI regression suite. Never touches the live database.
 WEBTERM_TEST_BIN=/path/webterm WEBTERM_TEST_REPORT=/path/report.json python3 tests/unified_webterm_integration.py
 """
+import base64
 import concurrent.futures
 import http.cookiejar
 import json
@@ -214,6 +215,14 @@ try:
     (workspace/'pixel.png').write_bytes(png)
     image=rpc('tools/call',{'name':'get_image','arguments':{'workspace_id':str(workspace),'path':'pixel.png','task':'integration','summary':'85/100 Testing native image output'}})
     check('native image output remains native',any(c['type']=='image' for c in image['result']['content']))
+    block=next(c for c in image['result']['content'] if c['type']=='image')
+    meta=image['result']['structuredContent']
+    check('get_image defaults to JPEG at original resolution',block['mimeType']=='image/jpeg' and meta['original_mime_type']=='image/png' and meta['jpeg_quality']==90 and (meta['width'],meta['height'])==(1,1),meta)
+    original=rpc('tools/call',{'name':'get_image','arguments':{'workspace_id':str(workspace),'path':'pixel.png','jpeg':False,'task':'integration','summary':'85/100 Testing original image output'}})
+    oblock=next(c for c in original['result']['content'] if c['type']=='image')
+    check('get_image jpeg=false returns original bytes',oblock['mimeType']=='image/png' and base64.b64decode(oblock['data'])==png,original['result'].get('structuredContent'))
+    bad=rpc('tools/call',{'name':'get_image','arguments':{'workspace_id':str(workspace),'path':'pixel.png','jpeg':'no','task':'integration','summary':'85/100 Testing invalid jpeg flag'}})
+    check('get_image rejects non-boolean jpeg',bad['result'].get('isError') is True,bad)
     cnew=cli('new',workspace,'cli-shell');created.append((workspace,cnew['terminal_id']))
     cli('write',workspace,str(cnew['terminal_id']),'--enter','--',"printf cli")
     cli('read',workspace,str(cnew['terminal_id']))

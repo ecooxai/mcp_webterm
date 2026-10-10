@@ -857,7 +857,7 @@
       "bytes": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 16777216
+        "maximum": 67108864
       },
       "width": {
         "type": "integer",
@@ -868,6 +868,28 @@
         "type": "integer",
         "minimum": 1,
         "maximum": 16384
+      },
+      "original_mime_type": {
+        "type": "string",
+        "enum": [
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp"
+        ]
+      },
+      "original_bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16777216
+      },
+      "jpeg_quality": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 1,
+        "maximum": 100
       }
     },
     "required": [

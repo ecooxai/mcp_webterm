@@ -54,7 +54,7 @@
 
   function init() {
     const ids = [
-      "login-view", "login-form", "password", "password-toggle", "login-error", "login-submit",
+      "login-view", "login-form", "password", "password-toggle", "login-error", "login-submit", "login-status",
       "app-view", "drawer-open", "drawer-scrim", "sidebar", "active-workspace", "active-terminal", "active-backend",
       "connection-chip", "connection-label", "logout-button", "workspace-create", "workspace-list",
       "nav-empty", "refresh-button", "refresh-status", "terminal-panel", "terminal-empty",
@@ -132,11 +132,13 @@
       return;
     }
 
+    // A saved password signs in without the form; slow networks see progress, not a password field.
+    if (window.WebTermAuth.saved()) showConnecting("Signing in with your saved password…");
     try {
       const body = await window.WebTermAuth.getSession();
       rememberSecurityContext(new Response(), body);
-      await window.WebTermAuth.ensureWorker();
       enterApp(body);
+      startFileAuthWorker();
     } catch (error) {
       showLogin(error.status === 401 ? "" : (error.message || "Unable to reach WebTerm."));
     }
@@ -157,14 +159,39 @@
     try {
       const body = await window.WebTermAuth.login(value);
       rememberSecurityContext(new Response(), body);
-      await window.WebTermAuth.ensureWorker();
+      showConnecting("Signed in. Opening your terminals…");
       enterApp(body);
+      startFileAuthWorker();
     } catch (error) {
       elements.loginError.textContent = friendlyError(error, "Sign-in failed. Try again.");
       elements.password.focus();
     } finally {
       setButtonBusy(elements.loginSubmit, false);
     }
+  }
+
+  function showConnecting(message) {
+    elements.loginForm.hidden = true;
+    elements.loginStatus.textContent = message;
+    elements.loginStatus.hidden = false;
+  }
+
+  // The file-preview worker is not needed for terminals; never hold the UI on it.
+  function startFileAuthWorker() {
+    window.WebTermAuth.ensureWorker().catch((error) => {
+      if (state.authenticated) showToast(friendlyError(error, "Private file previews are unavailable in this browser."));
+    });
+  }
+
+  function readActiveView() {
+    try {
+      const value = JSON.parse(localStorage.getItem("webterm.activeView") || "{}") || {};
+      return { workspace: value.workspace ? String(value.workspace) : null, terminal: value.terminal ? String(value.terminal) : null };
+    } catch { return { workspace: null, terminal: null }; }
+  }
+
+  function saveActiveView(workspace, terminal) {
+    try { localStorage.setItem("webterm.activeView", JSON.stringify({ workspace, terminal })); } catch {}
   }
 
   function togglePassword() {
@@ -199,6 +226,7 @@
     state.refreshInterval = window.setInterval(() => refreshWorkspaces(false), 5_000);
     startMetricsPolling();
     syncVisualViewport();
+    state.restorePending = true;
     refreshWorkspaces(true);
     if (location.pathname === "/log" || location.pathname === "/webterm/log") window.WebTermLog.open();
   }
@@ -210,6 +238,8 @@
     stopMetricsPolling(true);
     elements.appView.hidden = true;
     elements.loginView.hidden = false;
+    elements.loginForm.hidden = false;
+    elements.loginStatus.hidden = true;
     elements.loginError.textContent = message;
     requestAnimationFrame(() => elements.password.focus({ preventScroll: true }));
   }
@@ -439,6 +469,17 @@
 
     window.WebTermExplorer?.observe(normalized);
     state.workspaces = normalized;
+    let restoreTerminalId = null;
+    if (state.restorePending) {
+      // After a reload, reopen the workspace and terminal that were last in view.
+      state.restorePending = false;
+      const saved = readActiveView();
+      if (saved.workspace && seenWorkspaces.has(saved.workspace)) {
+        state.activeWorkspaceId = saved.workspace;
+        state.expanded.add(saved.workspace);
+      }
+      restoreTerminalId = saved.terminal;
+    }
     if (!state.activeWorkspaceId || !seenWorkspaces.has(state.activeWorkspaceId)) {
       state.activeWorkspaceId = normalized[0]?.id || null;
     }
@@ -488,6 +529,10 @@
     }
     if (state.activeId && !state.terminals.has(state.activeId)) deactivateTerminal();
     renderNavigation();
+    if (restoreTerminalId && !state.activeId && state.terminals.has(restoreTerminalId)) {
+      state.expanded.add(state.terminals.get(restoreTerminalId).workspaceId);
+      selectTerminal(restoreTerminalId);
+    }
     if (!state.activeId && !window.WebTermExplorer?.isViewerActive() && !window.WebTermTools?.isWebviewActive()) {
       const workspace = normalized.find((item) => item.id === state.activeWorkspaceId);
       const firstRunning = workspace?.terminals.find((terminal) => terminal.status === "running");
@@ -816,6 +861,7 @@
 
   function rememberTerminal(terminal) {
     state.lastTerminalByWorkspace[terminal.workspaceId] = terminal.id;
+    saveActiveView(terminal.workspaceId, terminal.id);
     try { localStorage.setItem("webterm.lastTerminalByWorkspace", JSON.stringify(state.lastTerminalByWorkspace)); } catch {}
   }
 
@@ -823,6 +869,7 @@
     const workspace = state.workspaces.find((item) => item.id === String(id));
     if (!workspace) return;
     state.activeWorkspaceId = workspace.id;
+    saveActiveView(workspace.id, null);
     const running = workspace.terminals.find((terminal) => terminal.status === "running");
     if (running) {
       selectTerminal(running.id);

@@ -279,6 +279,7 @@
         );
         const context = el("div", "log-context");
         context.append(
+          el("code", "log-subject"),
           el("strong", "log-task"),
           el("span", "log-task-stats"),
           el("span", "log-summary"),
@@ -300,6 +301,10 @@
         entry.duration_ms === null
           ? "In progress"
           : `${entry.duration_ms.toLocaleString()} ms`;
+      const subject = card.querySelector(".log-subject");
+      subject.textContent = entry.subject || "";
+      subject.title = entry.subject || "";
+      subject.hidden = !entry.subject;
       card.querySelector(".log-task").textContent =
         entry.task || "Untracked call";
       const stats = card.querySelector(".log-task-stats");

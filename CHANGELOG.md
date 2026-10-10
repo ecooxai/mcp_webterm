@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.6 - 2026-10-10
 
+- `/log` shows the webterm `cmd` under each webterm call title and the file path under each `get_image` title.
 - MCP instructions and tool schemas ask for an honest quality score `n/100` (100 = perfect) instead of a progress number.
 - The server tracks each task's total running time (latest call minus first call) and call count; `/log` shows them on every call and in a recent-task bar that filters by task. A task idle for 5 minutes with no running call restarts as `NAME-2`, `NAME-3`, ...
 - `get_image` returns JPEG quality 90 at the original resolution by default; `jpeg: false` returns the original file.

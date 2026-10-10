@@ -685,6 +685,21 @@
 .log-task {
   color: #c0d8ef;
 }
+.log-subject {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  color: #e3efff;
+  font:
+    12px ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-subject[hidden] {
+  display: none;
+}
 .log-summary {
   color: #98b0cb;
 }

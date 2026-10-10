@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const KEEP: i64 = 2000;
 const KEEP_TASKS: i64 = 5000;
 /// A task with no calls for this long starts a new numbered segment (NAME-2, ...).
+/// Max chars of the webterm command / get_image path shown under a log title.
+const SUBJECT_CHARS: usize = 400;
 pub const TASK_IDLE_MS: i64 = 5 * 60 * 1000;
 fn now() -> i64 {
     SystemTime::now()
@@ -297,9 +299,9 @@ pub fn page(config: &Config, q: &Query) -> Result<Value> {
         params![snapshot, text, workspace, task, status],
         |r| r.get(0),
     )?;
-    let mut stmt=d.prepare(&format!("SELECT c.id,c.started_ms,c.finished_ms,c.status,c.tool,c.task,c.summary,c.workspace,c.duration_ms,c.input_size,c.output_size,t.first_ms,t.last_ms,t.calls,EXISTS(SELECT 1 FROM calls r WHERE r.task_id=t.id AND r.status='running') FROM calls c LEFT JOIN tasks t ON t.id=c.task_id WHERE {filter} ORDER BY {sort} LIMIT 100 OFFSET ?6"))?;
+    let mut stmt=d.prepare(&format!("SELECT c.id,c.started_ms,c.finished_ms,c.status,c.tool,c.task,c.summary,c.workspace,c.duration_ms,c.input_size,c.output_size,t.first_ms,t.last_ms,t.calls,EXISTS(SELECT 1 FROM calls r WHERE r.task_id=t.id AND r.status='running'),CASE WHEN c.tool IN ('webterm','get_image') AND json_valid(c.arguments) THEN (CASE WHEN json_type(c.arguments,CASE c.tool WHEN 'webterm' THEN '$.cmd' ELSE '$.path' END)='text' THEN json_extract(c.arguments,CASE c.tool WHEN 'webterm' THEN '$.cmd' ELSE '$.path' END) END) END FROM calls c LEFT JOIN tasks t ON t.id=c.task_id WHERE {filter} ORDER BY {sort} LIMIT 100 OFFSET ?6"))?;
     let rows=stmt.query_map(params![snapshot,text,workspace,task,status,q.offset.unwrap_or(0).min(100000) as i64],|r|{
-        let mut entry=json!({"id":r.get::<_,i64>(0)?,"started_ms":r.get::<_,i64>(1)?,"finished_ms":r.get::<_,Option<i64>>(2)?,"status":r.get::<_,String>(3)?,"tool":r.get::<_,String>(4)?,"task":r.get::<_,String>(5)?,"summary":r.get::<_,String>(6)?,"workspace":r.get::<_,String>(7)?,"duration_ms":r.get::<_,Option<i64>>(8)?,"input_size":r.get::<_,i64>(9)?,"output_size":r.get::<_,i64>(10)?});
+        let mut entry=json!({"id":r.get::<_,i64>(0)?,"started_ms":r.get::<_,i64>(1)?,"finished_ms":r.get::<_,Option<i64>>(2)?,"status":r.get::<_,String>(3)?,"tool":r.get::<_,String>(4)?,"task":r.get::<_,String>(5)?,"summary":r.get::<_,String>(6)?,"workspace":r.get::<_,String>(7)?,"duration_ms":r.get::<_,Option<i64>>(8)?,"input_size":r.get::<_,i64>(9)?,"output_size":r.get::<_,i64>(10)?,"subject":r.get::<_,Option<String>>(15)?.map(|s| s.chars().take(SUBJECT_CHARS).collect::<String>())});
         if let (Value::Object(entry), Value::Object(stats)) = (&mut entry, task_json(r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,at)) {
             entry.extend(stats);
         }
@@ -412,5 +414,37 @@ mod tests {
         let untracked = page(&c, &Query::default()).unwrap();
         assert_eq!(untracked["entries"][0]["id"], u);
         assert!(untracked["entries"][0]["task_calls"].is_null());
+    }
+    #[test]
+    fn page_shows_webterm_command_and_image_path() {
+        let t = tempfile::tempdir().unwrap();
+        let c = Config {
+            database_path: t.path().join("db"),
+            ..Config::default()
+        };
+        let calls = [
+            json!({"name":"webterm","arguments":{"cmd":"webterm run --wait 5","text":"ls -la","task":"Log"}}),
+            json!({"name":"get_image","arguments":{"workspace_id":"/w","path":"shots/a.png"}}),
+            json!({"name":"webterm","arguments":{"cmd":1}}),
+            json!({"name":"bash","arguments":{"command":"echo hi","path":"x"}}),
+        ];
+        let ids: Vec<i64> = calls
+            .iter()
+            .map(|p| begin(&c, p.as_object()).unwrap())
+            .collect();
+        let page_value = page(&c, &Query::default()).unwrap();
+        let subject = |id: i64| {
+            page_value["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == id)
+                .unwrap()["subject"]
+                .clone()
+        };
+        assert_eq!(subject(ids[0]), "webterm run --wait 5");
+        assert_eq!(subject(ids[1]), "shots/a.png");
+        assert!(subject(ids[2]).is_null());
+        assert!(subject(ids[3]).is_null());
     }
 }

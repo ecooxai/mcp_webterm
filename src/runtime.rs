@@ -55,6 +55,10 @@ const FD_LIMIT_TARGET: u64 = 65_536;
 /// Keep this much space free on a swap filesystem before using it.
 const SWAP_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+/// Hibernate at most this many terminals per pass so thousands going idle
+/// together cost a steady trickle of CPU instead of one burst.
+const HIBERNATE_BATCH: usize = 64;
+const BACKLOG_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
 const RESUME_NOTICE: &[u8] =
     b"\r\n\x1b[2m[webterm: idle shell was hibernated; started a new shell]\x1b[0m\r\n";
 
@@ -597,14 +601,17 @@ impl RuntimeServer {
         };
         let idle_ms = idle.as_millis() as u64;
         let now = now_ms();
-        let candidates = self
+        let mut candidates = self
             .sessions()?
             .into_iter()
             .filter(|session| {
                 !session.stopped.load(Ordering::Acquire)
+                    && !session.is_settled()
                     && now.saturating_sub(session.last_activity.load(Ordering::Acquire)) >= idle_ms
             })
             .collect::<Vec<_>>();
+        candidates.sort_by_key(|session| session.last_activity.load(Ordering::Acquire));
+        candidates.truncate(HIBERNATE_BATCH);
         if candidates.is_empty() {
             return Ok(0);
         }
@@ -852,6 +859,20 @@ impl Session {
         }
         self.touch();
         Ok(())
+    }
+
+    /// Already off-RAM with nothing left for the sweeper to do. A busy shell
+    /// whose screen is on disk prints a prompt (activity) when its job ends.
+    fn is_settled(&self) -> bool {
+        let Ok(phase) = self.phase.try_lock() else {
+            return false;
+        };
+        if *phase == Phase::Retiring {
+            return false;
+        }
+        self.model
+            .try_lock()
+            .is_ok_and(|model| model.swapped.is_some() && model.subscribers.is_empty())
     }
 
     /// Called by the sweeper for a session idle past the timeout.
@@ -1619,11 +1640,17 @@ pub fn serve(socket: &Path, options: RuntimeOptions) -> Result<()> {
         thread::Builder::new()
             .name("pty-idle-sweeper".to_owned())
             .spawn(move || {
+                let mut pause = interval;
                 loop {
-                    thread::sleep(interval);
-                    if let Err(error) = sweeper.sweep() {
-                        tracing::warn!(%error, "idle terminal sweep failed");
-                    }
+                    thread::sleep(pause);
+                    pause = match sweeper.sweep() {
+                        Ok(changed) if changed >= HIBERNATE_BATCH => BACKLOG_SWEEP_INTERVAL,
+                        Ok(_) => interval,
+                        Err(error) => {
+                            tracing::warn!(%error, "idle terminal sweep failed");
+                            interval
+                        }
+                    };
                 }
             })
             .context("start idle terminal sweeper")?;

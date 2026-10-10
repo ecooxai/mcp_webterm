@@ -6,21 +6,21 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    fs::{self, OpenOptions},
     io::{self, BufRead, BufReader, Read, Write},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::{
-        fs::{FileTypeExt, MetadataExt, PermissionsExt},
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -33,7 +33,6 @@ const DEFAULT_ROWS: u16 = 24;
 pub const MAX_COLS: u16 = 512;
 pub const MAX_ROWS: u16 = 256;
 const SCROLLBACK_ROWS: usize = 3_000;
-const MAX_SESSIONS: usize = 32;
 const MAX_SESSION_ID: usize = 128;
 const MAX_INPUT: usize = 64 * 1024;
 const MAX_CAPTURE_LINES: u16 = 2_000;
@@ -47,6 +46,94 @@ const MAX_CONNECTIONS: usize = 256;
 const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_GRACE: Duration = Duration::from_millis(150);
 const STOP_TIMEOUT: Duration = Duration::from_secs(4);
+/// Per-terminal threads only block in poll/waitpid; small stacks keep
+/// thousands of terminals cheap in address space and RSS.
+const SESSION_THREAD_STACK: usize = 256 * 1024;
+const CONNECTION_THREAD_STACK: usize = 512 * 1024;
+/// Soft descriptor limit requested at startup; each live PTY uses ~6 fds.
+const FD_LIMIT_TARGET: u64 = 65_536;
+/// Keep this much space free on a swap filesystem before using it.
+const SWAP_RESERVE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+/// Hibernate at most this many terminals per pass so thousands going idle
+/// together cost a steady trickle of CPU instead of one burst.
+const HIBERNATE_BATCH: usize = 64;
+const BACKLOG_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
+const RESUME_NOTICE: &[u8] =
+    b"\r\n\x1b[2m[webterm: idle shell was hibernated; started a new shell]\x1b[0m\r\n";
+
+/// Runtime daemon policy for idle terminals.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeOptions {
+    /// Inactivity after which the screen moves to disk and an idle shell retires.
+    pub idle_timeout: Option<Duration>,
+    /// Private swap folders, tried in order until one has room.
+    pub swap_dirs: Vec<PathBuf>,
+}
+
+impl RuntimeOptions {
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        let uid = unsafe { libc::geteuid() };
+        let mut bases = Vec::new();
+        if let Some(dir) = &config.runtime_swap_dir {
+            bases.push(dir.clone());
+        }
+        bases.push(std::env::temp_dir().join(format!("webterm-swap-{uid}")));
+        bases.push(PathBuf::from(format!("/tmp/webterm-swap-{uid}")));
+        bases.push(PathBuf::from(format!("/var/tmp/webterm-swap-{uid}")));
+        if let Some(parent) = config.runtime_socket.parent() {
+            bases.push(parent.join("swap"));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            bases.push(PathBuf::from(home).join(".cache/webterm/swap"));
+        }
+        // Several runtimes may share one user; never mix their swap files.
+        let namespace = format!(
+            "rt-{:016x}",
+            fnv1a(config.runtime_socket.as_os_str().as_encoded_bytes())
+        );
+        let mut swap_dirs: Vec<PathBuf> = Vec::new();
+        for base in bases {
+            let dir = base.join(&namespace);
+            if !swap_dirs.contains(&dir) {
+                swap_dirs.push(dir);
+            }
+        }
+        Self {
+            idle_timeout: (config.runtime_idle_seconds > 0)
+                .then(|| Duration::from_secs(config.runtime_idle_seconds)),
+            swap_dirs,
+        }
+    }
+
+    fn sweep_interval(&self) -> Option<Duration> {
+        self.idle_timeout
+            .map(|idle| (idle / 4).clamp(Duration::from_secs(1), MAX_SWEEP_INTERVAL))
+    }
+}
+
+/// Aggregate runtime counters, cheap enough to poll.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeStats {
+    pub sessions: usize,
+    pub active_shells: usize,
+    pub dormant: usize,
+    pub swapped_screens: usize,
+    pub subscribers: usize,
+    pub idle_timeout_seconds: Option<u64>,
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
 
 #[derive(Clone, Debug)]
 pub struct RuntimeClient {
@@ -60,6 +147,12 @@ pub struct RuntimeInfo {
     pub rows: u16,
     pub running: bool,
     pub backend: String,
+    /// The shell was retired while idle and starts again on next input/viewer.
+    #[serde(default)]
+    pub hibernated: bool,
+    /// The screen and scrollback currently live in a swap file.
+    #[serde(default)]
+    pub swapped: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +216,17 @@ impl RuntimeClient {
     pub fn has_session(&self, id: &str) -> Result<bool> {
         validate_session_id(id)?;
         self.rpc(&Request::HasSession { id: id.to_owned() })
+    }
+
+    /// IDs of every session that is logically alive (including hibernated
+    /// shells), in one RPC instead of one connection per terminal.
+    pub fn list_sessions(&self) -> Result<HashSet<String>> {
+        let ids: Vec<String> = self.rpc(&Request::List)?;
+        Ok(ids.into_iter().collect())
+    }
+
+    pub fn stats(&self) -> Result<RuntimeStats> {
+        self.rpc(&Request::Stats)
     }
 
     pub fn write(&self, id: &str, data: &str, enter: bool) -> Result<()> {
@@ -383,6 +487,8 @@ enum Request {
     Capture { id: String, lines: u16 },
     Subscribe { id: String },
     Info { id: String },
+    List,
+    Stats,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -433,6 +539,7 @@ struct SubscribeHello {
 
 struct RuntimeServer {
     registry: Mutex<Registry>,
+    options: Arc<RuntimeOptions>,
 }
 
 #[derive(Default)]
@@ -442,10 +549,82 @@ struct Registry {
 }
 
 impl RuntimeServer {
-    fn new() -> Self {
+    fn new(options: Arc<RuntimeOptions>) -> Self {
         Self {
             registry: Mutex::new(Registry::default()),
+            options,
         }
+    }
+
+    fn sessions(&self) -> Result<Vec<Arc<Session>>> {
+        Ok(lock(&self.registry, "runtime registry")?
+            .sessions
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn list(&self) -> Result<Vec<String>> {
+        Ok(lock(&self.registry, "runtime registry")?
+            .sessions
+            .iter()
+            .filter(|(_, session)| !session.stopped.load(Ordering::Acquire))
+            .map(|(id, _)| id.clone())
+            .collect())
+    }
+
+    fn stats(&self) -> Result<RuntimeStats> {
+        let mut stats = RuntimeStats {
+            idle_timeout_seconds: self.options.idle_timeout.map(|idle| idle.as_secs()),
+            ..RuntimeStats::default()
+        };
+        for session in self.sessions()? {
+            if session.stopped.load(Ordering::Acquire) {
+                continue;
+            }
+            stats.sessions += 1;
+            if *lock(&session.phase, "terminal phase")? == Phase::Dormant {
+                stats.dormant += 1;
+            }
+            let model = lock(&session.model, "terminal model")?;
+            stats.active_shells += usize::from(model.running);
+            stats.swapped_screens += usize::from(model.swapped.is_some());
+            stats.subscribers += model.subscribers.len();
+        }
+        Ok(stats)
+    }
+
+    /// Move idle screens to disk and retire shells idle at a prompt.
+    fn sweep(&self) -> Result<usize> {
+        let Some(idle) = self.options.idle_timeout else {
+            return Ok(0);
+        };
+        let idle_ms = idle.as_millis() as u64;
+        let now = now_ms();
+        let mut candidates = self
+            .sessions()?
+            .into_iter()
+            .filter(|session| {
+                !session.stopped.load(Ordering::Acquire)
+                    && !session.is_settled()
+                    && now.saturating_sub(session.last_activity.load(Ordering::Acquire)) >= idle_ms
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|session| session.last_activity.load(Ordering::Acquire));
+        candidates.truncate(HIBERNATE_BATCH);
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        let census = session_census();
+        let changed = candidates
+            .iter()
+            .filter(|session| session.hibernate_if_idle(census.as_ref(), idle_ms))
+            .count();
+        if changed > 0 {
+            trim_heap();
+            tracing::info!(changed, "hibernated idle terminals");
+        }
+        Ok(changed)
     }
 
     fn create(&self, id: &str, cwd: &Path) -> Result<()> {
@@ -456,13 +635,10 @@ impl RuntimeServer {
             if registry.sessions.contains_key(id) || registry.creating.contains(id) {
                 bail!("terminal session already exists")
             }
-            if registry.sessions.len() + registry.creating.len() >= MAX_SESSIONS {
-                bail!("runtime session limit ({MAX_SESSIONS}) reached")
-            }
             registry.creating.insert(id.to_owned());
         }
 
-        let created = Session::create(id.to_owned(), cwd.to_owned());
+        let created = Session::create(id.to_owned(), cwd.to_owned(), Arc::clone(&self.options));
         let mut registry = lock(&self.registry, "runtime registry")?;
         registry.creating.remove(id);
         match created {
@@ -513,10 +689,23 @@ impl RuntimeServer {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Active,
+    /// SIGHUP sent to an idle shell; the supervisor parks it once it exits.
+    Retiring,
+    /// No shell process or threads; screen on disk. Next use starts a shell.
+    Dormant,
+}
+
 struct Session {
     id: String,
     cwd: PathBuf,
     shell: PathBuf,
+    options: Arc<RuntimeOptions>,
+    last_activity: AtomicU64,
+    phase: Mutex<Phase>,
+    resume_cwd: Mutex<Option<PathBuf>>,
     model: Mutex<TerminalModel>,
     io: Mutex<SessionIo>,
     write_lock: Mutex<()>,
@@ -546,6 +735,15 @@ struct TerminalModel {
     subscribers: Vec<Subscriber>,
     next_subscriber: u64,
     bytes_since_rebase: usize,
+    swapped: Option<PathBuf>,
+}
+
+impl Drop for TerminalModel {
+    fn drop(&mut self) {
+        if let Some(path) = self.swapped.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -566,16 +764,30 @@ struct Spawned {
 }
 
 impl Session {
-    fn create(id: String, cwd: PathBuf) -> Result<Arc<Self>> {
+    fn create(id: String, cwd: PathBuf, options: Arc<RuntimeOptions>) -> Result<Arc<Self>> {
         let shell = configured_shell()?;
-        Self::create_with_shell(id, cwd, shell)
+        Self::create_with_options(id, cwd, shell, options)
     }
 
+    #[cfg(test)]
     fn create_with_shell(id: String, cwd: PathBuf, shell: PathBuf) -> Result<Arc<Self>> {
+        Self::create_with_options(id, cwd, shell, Arc::new(RuntimeOptions::default()))
+    }
+
+    fn create_with_options(
+        id: String,
+        cwd: PathBuf,
+        shell: PathBuf,
+        options: Arc<RuntimeOptions>,
+    ) -> Result<Arc<Self>> {
         let session = Arc::new(Self {
             id,
             cwd,
             shell,
+            options,
+            last_activity: AtomicU64::new(now_ms()),
+            phase: Mutex::new(Phase::Active),
+            resume_cwd: Mutex::new(None),
             model: Mutex::new(TerminalModel {
                 parser: vt100::Parser::new(DEFAULT_ROWS, DEFAULT_COLS, SCROLLBACK_ROWS),
                 cols: DEFAULT_COLS,
@@ -586,6 +798,7 @@ impl Session {
                 subscribers: Vec::new(),
                 next_subscriber: 1,
                 bytes_since_rebase: 0,
+                swapped: None,
             }),
             io: Mutex::new(SessionIo::default()),
             write_lock: Mutex::new(()),
@@ -596,12 +809,135 @@ impl Session {
             done_cv: Condvar::new(),
         });
         let initial = session.spawn_shell()?;
-        let supervisor = Arc::clone(&session);
-        thread::Builder::new()
-            .name(format!("pty-supervisor-{}", session.id))
-            .spawn(move || supervisor.supervise(initial))
-            .context("start PTY supervisor")?;
+        session.start_supervisor(initial)?;
         Ok(session)
+    }
+
+    fn start_supervisor(self: &Arc<Self>, initial: Spawned) -> Result<()> {
+        let supervisor = Arc::clone(self);
+        let pid = initial.child.process_id();
+        let started = thread::Builder::new()
+            .name(format!("pty-supervisor-{}", self.id))
+            .stack_size(SESSION_THREAD_STACK)
+            .spawn(move || supervisor.supervise(initial));
+        if let Err(error) = started {
+            if let Some(pid) = pid.and_then(|pid| i32::try_from(pid).ok()) {
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            return Err(error).context("start PTY supervisor");
+        }
+        Ok(())
+    }
+
+    fn touch(&self) {
+        self.last_activity.store(now_ms(), Ordering::Release);
+    }
+
+    /// Start a fresh shell for a hibernated terminal. Cheap no-op otherwise.
+    fn wake(self: &Arc<Self>) -> Result<()> {
+        let mut phase = lock(&self.phase, "terminal phase")?;
+        match *phase {
+            Phase::Active => {}
+            // The supervisor restarts the shell through its normal path.
+            Phase::Retiring => *phase = Phase::Active,
+            Phase::Dormant => {
+                if self.stopped.load(Ordering::Acquire) {
+                    bail!("terminal session is stopped")
+                }
+                {
+                    let mut model = lock(&self.model, "terminal model")?;
+                    model.process_output(RESUME_NOTICE);
+                }
+                let spawned = self.spawn_shell()?;
+                self.start_supervisor(spawned)?;
+                *phase = Phase::Active;
+                tracing::info!(session = %self.id, "resumed hibernated terminal");
+            }
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// Already off-RAM with nothing left for the sweeper to do. A busy shell
+    /// whose screen is on disk prints a prompt (activity) when its job ends.
+    fn is_settled(&self) -> bool {
+        let Ok(phase) = self.phase.try_lock() else {
+            return false;
+        };
+        if *phase == Phase::Retiring {
+            return false;
+        }
+        self.model
+            .try_lock()
+            .is_ok_and(|model| model.swapped.is_some() && model.subscribers.is_empty())
+    }
+
+    /// Called by the sweeper for a session idle past the timeout.
+    fn hibernate_if_idle(&self, census: Option<&HashMap<u32, usize>>, idle_ms: u64) -> bool {
+        let Ok(mut phase) = self.phase.lock() else {
+            return false;
+        };
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        let Ok(mut model) = self.model.lock() else {
+            return false;
+        };
+        if !model.subscribers.is_empty()
+            || now_ms().saturating_sub(self.last_activity.load(Ordering::Acquire)) < idle_ms
+        {
+            return false;
+        }
+        match *phase {
+            // A capture may have reloaded the screen; put it back on disk.
+            Phase::Dormant => {
+                return model
+                    .hibernate(&self.options.swap_dirs, &self.id)
+                    .unwrap_or(false);
+            }
+            Phase::Retiring => {
+                // Still alive a full sweep after SIGHUP.
+                if let Some(pid) = model.pid.and_then(|pid| i32::try_from(pid).ok()) {
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+                return false;
+            }
+            Phase::Active => {}
+        }
+        // Only a shell sitting at its prompt is retired: any other process in
+        // its terminal session (job, server, sudo, editor) keeps it alive.
+        let idle_shell = model.running
+            && model.pid.is_some_and(|pid| {
+                census.is_some_and(|census| census.get(&pid).copied().unwrap_or(0) <= 1)
+            });
+        if idle_shell && let Some(pid) = model.pid {
+            if let Ok(target) = fs::read_link(format!("/proc/{pid}/cwd"))
+                && let Ok(mut resume) = self.resume_cwd.lock()
+            {
+                *resume = Some(target);
+            }
+            *phase = Phase::Retiring;
+            if let Ok(pid) = i32::try_from(pid) {
+                unsafe {
+                    libc::kill(-pid, libc::SIGHUP);
+                    libc::kill(pid, libc::SIGHUP);
+                }
+            }
+            return true;
+        }
+        match model.hibernate(&self.options.swap_dirs, &self.id) {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(session = %self.id, %error, "could not move idle screen to disk");
+                false
+            }
+        }
     }
 
     fn spawn_shell(&self) -> Result<Spawned> {
@@ -635,9 +971,13 @@ impl Session {
         let poll_fd = unsafe { OwnedFd::from_raw_fd(copied) };
         let reader = pair.master.try_clone_reader().context("clone PTY reader")?;
         let writer = pair.master.take_writer().context("open PTY writer")?;
+        let cwd = lock(&self.resume_cwd, "terminal resume folder")?
+            .clone()
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(|| self.cwd.clone());
         let mut command = CommandBuilder::new(&self.shell);
         command.arg("-l");
-        command.cwd(&self.cwd);
+        command.cwd(&cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
         for key in [
@@ -686,10 +1026,23 @@ impl Session {
             let reader_session = Arc::clone(&self);
             let reader_finished = Arc::new(AtomicBool::new(false));
             let reader_finished_thread = reader_finished.clone();
+            let (wake_read, wake_write) = match wake_pipe() {
+                Ok((read, write)) => (Some(read), Some(write)),
+                Err(error) => {
+                    tracing::warn!(session = %self.id, %error, "PTY wake pipe unavailable; polling");
+                    (None, None)
+                }
+            };
             let reader = thread::Builder::new()
                 .name(format!("pty-reader-{}", self.id))
+                .stack_size(SESSION_THREAD_STACK)
                 .spawn(move || {
-                    reader_session.read_pty(spawned.reader, spawned.poll_fd, reader_finished_thread)
+                    reader_session.read_pty(
+                        spawned.reader,
+                        spawned.poll_fd,
+                        wake_read,
+                        reader_finished_thread,
+                    )
                 });
             if reader.is_err() {
                 self.signal_owned_processes(libc::SIGKILL);
@@ -699,8 +1052,27 @@ impl Session {
             // Stop the old incarnation's reader even if a background child kept
             // its slave open. Those process groups belong to this terminal only.
             reader_finished.store(true, Ordering::Release);
-            self.signal_owned_processes(libc::SIGHUP);
-            self.signal_owned_processes(libc::SIGKILL);
+            if let Some(wake) = &wake_write {
+                let _ = unsafe { libc::write(wake.as_raw_fd(), b"x".as_ptr().cast(), 1) };
+            }
+            let retiring = self
+                .phase
+                .lock()
+                .is_ok_and(|phase| *phase == Phase::Retiring);
+            if retiring {
+                // The sweeper verified nothing else ran in this session; skip
+                // the /proc scans so thousands of shells can retire at once.
+                if let Some(pid) = spawned
+                    .child
+                    .process_id()
+                    .and_then(|pid| i32::try_from(pid).ok())
+                {
+                    let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+                }
+            } else {
+                self.signal_owned_processes(libc::SIGHUP);
+                self.signal_owned_processes(libc::SIGKILL);
+            }
             {
                 if let Ok(mut session_io) = self.io.lock() {
                     session_io.writer.take();
@@ -722,8 +1094,23 @@ impl Session {
                 });
             }
 
-            if self.stopped.load(Ordering::Acquire) {
-                break;
+            {
+                let Ok(mut phase) = self.phase.lock() else {
+                    break;
+                };
+                if self.stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                if *phase == Phase::Retiring {
+                    if let Ok(mut model) = self.model.lock()
+                        && let Err(error) = model.hibernate(&self.options.swap_dirs, &self.id)
+                    {
+                        tracing::warn!(session = %self.id, %error, "could not move idle screen to disk");
+                    }
+                    *phase = Phase::Dormant;
+                    // No shell and no threads remain until the next viewer/input.
+                    return;
+                }
             }
             loop {
                 let guard = match self.restart_mutex.lock() {
@@ -746,11 +1133,18 @@ impl Session {
             }
         }
 
+        self.finish_closed();
+    }
+
+    fn finish_closed(&self) {
         if let Ok(mut model) = self.model.lock() {
             broadcast(&mut model.subscribers, RuntimeEvent::Closed);
             model.subscribers.clear();
             model.running = false;
             model.pid = None;
+            if let Some(path) = model.swapped.take() {
+                let _ = fs::remove_file(path);
+            }
         }
         if let Ok(mut done) = self.done.lock() {
             *done = true;
@@ -762,6 +1156,7 @@ impl Session {
         &self,
         mut reader: Box<dyn Read + Send>,
         poll_fd: OwnedFd,
+        wake: Option<OwnedFd>,
         finished: Arc<AtomicBool>,
     ) {
         let mut bytes = [0_u8; PTY_READ_SIZE];
@@ -779,6 +1174,7 @@ impl Session {
             match reader.read(&mut bytes) {
                 Ok(0) => break,
                 Ok(count) => {
+                    self.touch();
                     if let Ok(mut model) = self.model.lock() {
                         model.process_output(&bytes[..count]);
                     } else {
@@ -790,12 +1186,22 @@ impl Session {
                     if finished.load(Ordering::Acquire) {
                         break;
                     }
-                    let mut poll = libc::pollfd {
-                        fd: poll_fd.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    let _ = unsafe { libc::poll(&mut poll, 1, 100) };
+                    // Block without a timer: idle terminals cost no CPU. The
+                    // supervisor writes to the wake pipe when the shell exits.
+                    let mut polls = [
+                        libc::pollfd {
+                            fd: poll_fd.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: wake.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    let timeout = if wake.is_some() { -1 } else { 100 };
+                    let _ = unsafe { libc::poll(polls.as_mut_ptr(), 2, timeout) };
                 }
                 // Linux PTY masters commonly report EIO when the final slave closes.
                 Err(_) => break,
@@ -803,10 +1209,11 @@ impl Session {
         }
     }
 
-    fn write(&self, data: &[u8]) -> Result<()> {
+    fn write(self: &Arc<Self>, data: &[u8]) -> Result<()> {
         if data.len() > MAX_INPUT {
             bail!("terminal input exceeds {MAX_INPUT} bytes")
         }
+        self.wake()?;
         let deadline = Instant::now() + Duration::from_secs(2);
         // Serialize one input message without keeping the PTY-control mutex
         // locked while the child is not reading. Stop/resize remain responsive.
@@ -833,11 +1240,13 @@ impl Session {
             }
             let result = {
                 let mut io = lock(&self.io, "terminal PTY")?;
-                let writer = io
-                    .writer
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("login shell is restarting"))?;
-                writer.write(&data[written..])
+                match io.writer.as_mut() {
+                    Some(writer) => writer.write(&data[written..]),
+                    None => Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "login shell is restarting",
+                    )),
+                }
             };
             match result {
                 Ok(0) => bail!("terminal input closed after {written} bytes"),
@@ -845,13 +1254,14 @@ impl Session {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if Instant::now() >= deadline {
-                        bail!("terminal input timed out after {written} bytes")
+                        bail!("terminal input timed out after {written} bytes: {error}")
                     }
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) => return Err(error).context("write terminal input"),
             }
         }
+        self.touch();
         Ok(())
     }
 
@@ -865,18 +1275,20 @@ impl Session {
         if model.cols == cols && model.rows == rows {
             return Ok(());
         }
-        let master = io
-            .master
-            .as_ref()
-            .ok_or_else(|| anyhow!("login shell is restarting"))?;
-        master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("resize terminal PTY")?;
+        self.touch();
+        model.ensure_resident();
+        // Without a live PTY (restarting or hibernated) the next shell is
+        // opened at the model size.
+        if let Some(master) = io.master.as_ref() {
+            master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .context("resize terminal PTY")?;
+        }
         model.cols = cols;
         model.rows = rows;
         model.parser.screen_mut().set_size(rows, cols);
@@ -900,7 +1312,11 @@ impl Session {
         Ok(model.capture(lines))
     }
 
-    fn subscribe(&self) -> Result<(SubscribeHello, u64, Receiver<RuntimeEvent>)> {
+    fn subscribe(self: &Arc<Self>) -> Result<(SubscribeHello, u64, Receiver<RuntimeEvent>)> {
+        if let Err(error) = self.wake() {
+            tracing::warn!(session = %self.id, %error, "could not resume hibernated terminal");
+        }
+        self.touch();
         let mut model = lock(&self.model, "terminal model")?;
         if model.subscribers.len() >= MAX_SUBSCRIBERS_PER_SESSION {
             bail!("terminal subscriber limit reached")
@@ -919,12 +1335,14 @@ impl Session {
     }
 
     fn unsubscribe(&self, subscriber_id: u64) {
+        self.touch();
         if let Ok(mut model) = self.model.lock() {
             model.subscribers.retain(|item| item.id != subscriber_id);
         }
     }
 
     fn info(&self) -> Result<RuntimeInfo> {
+        let hibernated = *lock(&self.phase, "terminal phase")? == Phase::Dormant;
         let model = lock(&self.model, "terminal model")?;
         if let Some(exit) = &model.last_exit {
             let _ = (exit.code, exit.signal.as_deref());
@@ -935,11 +1353,23 @@ impl Session {
             rows: model.rows,
             running: model.running,
             backend: "native-pty".to_owned(),
+            hibernated,
+            swapped: model.swapped.is_some(),
         })
     }
 
     fn stop(&self) -> Result<()> {
-        if self.stopped.swap(true, Ordering::AcqRel) {
+        let first = {
+            let phase = lock(&self.phase, "terminal phase")?;
+            let first = !self.stopped.swap(true, Ordering::AcqRel);
+            if *phase == Phase::Dormant {
+                // No supervisor exists to report completion.
+                self.finish_closed();
+                return Ok(());
+            }
+            first
+        };
+        if !first {
             return self.wait_done(STOP_TIMEOUT);
         }
         self.restart_cv.notify_all();
@@ -1036,7 +1466,39 @@ impl Session {
 }
 
 impl TerminalModel {
+    /// Reload a screen that was moved to disk while idle.
+    fn ensure_resident(&mut self) {
+        let Some(path) = self.swapped.take() else {
+            return;
+        };
+        let mut parser = vt100::Parser::new(self.rows, self.cols, SCROLLBACK_ROWS);
+        match fs::read(&path) {
+            Ok(bytes) => parser.process(&bytes),
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "hibernated screen unavailable");
+                parser.process(b"[webterm: hibernated screen could not be restored]\r\n");
+            }
+        }
+        let _ = fs::remove_file(&path);
+        self.parser = parser;
+        self.bytes_since_rebase = 0;
+    }
+
+    /// Write the canonical screen and scrollback to a private swap file and
+    /// release the in-memory grid. Returns false when already on disk.
+    fn hibernate(&mut self, dirs: &[PathBuf], id: &str) -> Result<bool> {
+        if self.swapped.is_some() {
+            return Ok(false);
+        }
+        let snapshot = self.snapshot();
+        let path = write_swap_file(dirs, id, &snapshot)?;
+        self.parser = vt100::Parser::new(2, 2, 0);
+        self.swapped = Some(path);
+        Ok(true)
+    }
+
     fn process_output(&mut self, data: &[u8]) {
+        self.ensure_resident();
         self.parser.process(data);
         self.bytes_since_rebase = self.bytes_since_rebase.saturating_add(data.len());
         if self.bytes_since_rebase >= MODEL_REBASE_BYTES {
@@ -1067,7 +1529,8 @@ impl TerminalModel {
         );
     }
 
-    fn snapshot(&self) -> Vec<u8> {
+    fn snapshot(&mut self) -> Vec<u8> {
+        self.ensure_resident();
         canonical_snapshot(&self.parser)
     }
 
@@ -1075,6 +1538,7 @@ impl TerminalModel {
         if lines == 0 {
             return String::new();
         }
+        self.ensure_resident();
         let requested = usize::from(lines);
         let screen = self.parser.screen_mut();
         if screen.alternate_screen() {
@@ -1162,10 +1626,35 @@ fn broadcast(subscribers: &mut Vec<Subscriber>, event: RuntimeEvent) {
 }
 
 /// Run the native PTY daemon in the foreground.
-pub fn serve(socket: &Path) -> Result<()> {
+pub fn serve(socket: &Path, options: RuntimeOptions) -> Result<()> {
     validate_socket_path(socket)?;
+    raise_fd_limit();
     let (listener, _socket_guard) = bind_private_socket(socket)?;
-    let server = Arc::new(RuntimeServer::new());
+    // A new daemon owns no sessions; earlier swap files are unreachable.
+    for dir in &options.swap_dirs {
+        remove_stale_swap_files(dir);
+    }
+    let server = Arc::new(RuntimeServer::new(Arc::new(options)));
+    if let Some(interval) = server.options.sweep_interval() {
+        let sweeper = Arc::clone(&server);
+        thread::Builder::new()
+            .name("pty-idle-sweeper".to_owned())
+            .spawn(move || {
+                let mut pause = interval;
+                loop {
+                    thread::sleep(pause);
+                    pause = match sweeper.sweep() {
+                        Ok(changed) if changed >= HIBERNATE_BATCH => BACKLOG_SWEEP_INTERVAL,
+                        Ok(_) => interval,
+                        Err(error) => {
+                            tracing::warn!(%error, "idle terminal sweep failed");
+                            interval
+                        }
+                    };
+                }
+            })
+            .context("start idle terminal sweeper")?;
+    }
     let active = Arc::new(AtomicUsize::new(0));
     loop {
         let (stream, _) = listener.accept().context("accept runtime connection")?;
@@ -1180,12 +1669,18 @@ pub fn serve(socket: &Path) -> Result<()> {
         }
         let server = Arc::clone(&server);
         let active = Arc::clone(&active);
-        thread::spawn(move || {
-            let _permit = ConnectionPermit(active);
-            if let Err(error) = handle_connection(&server, stream) {
-                tracing::debug!(%error, "runtime client connection ended");
-            }
-        });
+        let spawned = thread::Builder::new()
+            .name("runtime-connection".to_owned())
+            .stack_size(CONNECTION_THREAD_STACK)
+            .spawn(move || {
+                let _permit = ConnectionPermit(active);
+                if let Err(error) = handle_connection(&server, stream) {
+                    tracing::debug!(%error, "runtime client connection ended");
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start runtime connection thread");
+        }
     }
 }
 
@@ -1315,6 +1810,8 @@ fn dispatch(server: &RuntimeServer, request: Request) -> Result<Value> {
         Request::Info { id } => {
             serde_json::to_value(server.session(&id)?.info()?).map_err(Into::into)
         }
+        Request::List => serde_json::to_value(server.list()?).map_err(Into::into),
+        Request::Stats => serde_json::to_value(server.stats()?).map_err(Into::into),
         Request::Subscribe { .. } => unreachable!("subscribe handled before dispatch"),
     }
 }
@@ -1505,6 +2002,153 @@ impl Drop for SocketGuard {
     }
 }
 
+fn wake_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+fn raise_fd_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return;
+    }
+    let target = (limit.rlim_max as u64).min(FD_LIMIT_TARGET);
+    if (limit.rlim_cur as u64) < target {
+        limit.rlim_cur = target as libc::rlim_t;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+            tracing::warn!(error = %io::Error::last_os_error(), "could not raise descriptor limit");
+        }
+    }
+}
+
+/// Process count per terminal session ID (the shell's PID), from /proc.
+#[cfg(target_os = "linux")]
+fn session_census() -> Option<HashMap<u32, usize>> {
+    let mut counts = HashMap::new();
+    for entry in fs::read_dir("/proc").ok()?.flatten() {
+        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+            continue;
+        }
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, rest)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        if let Some(session) = rest.split_whitespace().nth(3).and_then(|v| v.parse().ok()) {
+            *counts.entry(session).or_insert(0) += 1;
+        }
+    }
+    Some(counts)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn session_census() -> Option<HashMap<u32, usize>> {
+    None
+}
+
+fn trim_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+fn ensure_private_dir(dir: &Path) -> Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("create swap folder {}", dir.display()))?;
+    let metadata = fs::symlink_metadata(dir)?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        bail!("swap folder {} is not a private directory", dir.display())
+    }
+    if metadata.mode() & 0o077 != 0 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn free_bytes(dir: &Path) -> Result<u64> {
+    let path = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes())?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return Err(io::Error::last_os_error()).context("statvfs swap folder");
+    }
+    Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+fn try_write_swap_file(dir: &Path, id: &str, data: &[u8]) -> Result<PathBuf> {
+    ensure_private_dir(dir)?;
+    let needed = data.len() as u64 + SWAP_RESERVE_BYTES;
+    if free_bytes(dir)? < needed {
+        bail!("swap folder {} is full", dir.display())
+    }
+    let stem: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    let path = dir.join(format!("{stem}-{}.screen", uuid::Uuid::new_v4().simple()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("create swap file {}", path.display()))?;
+    if let Err(error) = file.write_all(data) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error).with_context(|| format!("write swap file {}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Try each swap folder in order (e.g. /tmp, then persistent state) so a
+/// full or read-only filesystem does not keep idle screens in RAM.
+fn write_swap_file(dirs: &[PathBuf], id: &str, data: &[u8]) -> Result<PathBuf> {
+    let mut errors = Vec::new();
+    for dir in dirs {
+        match try_write_swap_file(dir, id, data) {
+            Ok(path) => return Ok(path),
+            Err(error) => errors.push(format!("{error:#}")),
+        }
+    }
+    if errors.is_empty() {
+        bail!("no swap folder is configured")
+    }
+    bail!("no swap folder accepted the screen: {}", errors.join("; "))
+}
+
+fn remove_stale_swap_files(dir: &Path) {
+    let Ok(metadata) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|ext| ext == "screen") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 fn lock<'a, T>(mutex: &'a Mutex<T>, name: &str) -> Result<std::sync::MutexGuard<'a, T>> {
     mutex.lock().map_err(|_| anyhow!("{name} is poisoned"))
 }
@@ -1525,6 +2169,180 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         predicate()
+    }
+
+    fn idle_options(swap: &Path) -> Arc<RuntimeOptions> {
+        // The first folder cannot be created, so every test exercises fallback.
+        let blocker = swap.join("blocker");
+        fs::write(&blocker, b"").unwrap();
+        Arc::new(RuntimeOptions {
+            idle_timeout: Some(Duration::from_millis(200)),
+            swap_dirs: vec![blocker.join("swap"), swap.join("swap")],
+        })
+    }
+
+    #[test]
+    fn more_than_32_sessions_are_allowed() -> Result<()> {
+        let temp = TempDir::new()?;
+        let server = RuntimeServer::new(Arc::new(RuntimeOptions::default()));
+        for index in 0..40 {
+            let session = Session::create_with_options(
+                format!("pty-many-{index}"),
+                temp.path().to_owned(),
+                PathBuf::from("/bin/sh"),
+                Arc::clone(&server.options),
+            )?;
+            server
+                .registry
+                .lock()
+                .unwrap()
+                .sessions
+                .insert(session.id.clone(), session);
+        }
+        assert_eq!(server.list()?.len(), 40);
+        assert_eq!(server.stats()?.sessions, 40);
+        for id in server.list()? {
+            server.stop(&id)?;
+        }
+        assert!(server.list()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn idle_prompt_shell_hibernates_to_disk_and_resumes() -> Result<()> {
+        let temp = TempDir::new()?;
+        let work = temp.path().join("work");
+        fs::create_dir_all(work.join("sub"))?;
+        let server = RuntimeServer::new(idle_options(temp.path()));
+        let session = Session::create_with_options(
+            "pty-idle".to_owned(),
+            work.clone(),
+            PathBuf::from("/bin/sh"),
+            Arc::clone(&server.options),
+        )?;
+        server
+            .registry
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(session.id.clone(), Arc::clone(&session));
+        session.write(b"cd sub; printf '\\102\\105\\106\\117\\122\\105\\012'\r")?;
+        assert!(wait_until(Duration::from_secs(3), || {
+            session
+                .capture(100)
+                .is_ok_and(|text| text.contains("BEFORE"))
+        }));
+        assert!(wait_until(Duration::from_secs(5), || {
+            let _ = server.sweep();
+            session
+                .info()
+                .is_ok_and(|info| info.hibernated && info.swapped && !info.running)
+        }));
+        let swap = temp.path().join("swap");
+        let files = fs::read_dir(&swap)?.count();
+        assert_eq!(files, 1);
+        assert_eq!(fs::metadata(&swap)?.mode() & 0o777, 0o700);
+        assert!(server.list()?.contains(&"pty-idle".to_owned()));
+        assert_eq!(server.stats()?.dormant, 1);
+
+        // Reading history does not start a shell.
+        assert!(session.capture(100)?.contains("BEFORE"));
+        assert!(session.info()?.hibernated);
+
+        session.write(b"pwd; printf '\\101\\106\\124\\105\\122\\012'\r")?;
+        assert!(wait_until(Duration::from_secs(3), || {
+            session
+                .capture(200)
+                .is_ok_and(|text| text.contains("AFTER"))
+        }));
+        let text = session.capture(200)?;
+        assert!(text.contains("BEFORE"), "{text}");
+        assert!(text.contains("idle shell was hibernated"), "{text}");
+        assert!(text.contains("/sub"), "{text}");
+        let info = session.info()?;
+        assert!(info.running && !info.hibernated && !info.swapped);
+        assert_eq!(fs::read_dir(&swap)?.count(), 0);
+        server.stop("pty-idle")?;
+        Ok(())
+    }
+
+    #[test]
+    fn busy_idle_terminal_keeps_process_but_moves_screen_to_disk() -> Result<()> {
+        let temp = TempDir::new()?;
+        let server = RuntimeServer::new(idle_options(temp.path()));
+        let session = Session::create_with_options(
+            "pty-busy".to_owned(),
+            temp.path().to_owned(),
+            PathBuf::from("/bin/sh"),
+            Arc::clone(&server.options),
+        )?;
+        server
+            .registry
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(session.id.clone(), Arc::clone(&session));
+        session.write(b"printf '\\123\\124\\101\\122\\124\\012'; sleep 30\r")?;
+        assert!(wait_until(Duration::from_secs(3), || {
+            session
+                .capture(100)
+                .is_ok_and(|text| text.contains("START"))
+        }));
+        let pid = session.info()?.pid;
+        assert!(wait_until(Duration::from_secs(5), || {
+            let _ = server.sweep();
+            session.info().is_ok_and(|info| info.swapped)
+        }));
+        let info = session.info()?;
+        assert!(info.running && !info.hibernated);
+        assert_eq!(info.pid, pid);
+        let (hello, id, _receiver) = session.subscribe()?;
+        assert!(String::from_utf8_lossy(&hello.snapshot).contains("START"));
+        session.unsubscribe(id);
+        session.stop()?;
+        Ok(())
+    }
+
+    #[test]
+    fn stopping_a_hibernated_terminal_removes_its_swap_file() -> Result<()> {
+        let temp = TempDir::new()?;
+        let server = RuntimeServer::new(idle_options(temp.path()));
+        let session = Session::create_with_options(
+            "pty-gone".to_owned(),
+            temp.path().to_owned(),
+            PathBuf::from("/bin/sh"),
+            Arc::clone(&server.options),
+        )?;
+        server
+            .registry
+            .lock()
+            .unwrap()
+            .sessions
+            .insert(session.id.clone(), Arc::clone(&session));
+        assert!(wait_until(Duration::from_secs(5), || {
+            let _ = server.sweep();
+            session.info().is_ok_and(|info| info.hibernated)
+        }));
+        server.stop("pty-gone")?;
+        assert!(!server.has_session("pty-gone")?);
+        assert_eq!(fs::read_dir(temp.path().join("swap"))?.count(), 0);
+        assert!(session.write(b"echo nope\r").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn swap_falls_back_when_first_folder_is_unusable() -> Result<()> {
+        let temp = TempDir::new()?;
+        let blocked = temp.path().join("not-a-dir");
+        fs::write(&blocked, b"")?;
+        let path = write_swap_file(
+            &[blocked.join("swap"), temp.path().join("ok")],
+            "pty-x",
+            b"data",
+        )?;
+        assert!(path.starts_with(temp.path().join("ok")));
+        assert_eq!(fs::read(&path)?, b"data");
+        Ok(())
     }
 
     #[test]
@@ -1603,7 +2421,7 @@ mod tests {
 
     #[test]
     fn malformed_and_oversized_requests_are_rejected() -> Result<()> {
-        let server = Arc::new(RuntimeServer::new());
+        let server = Arc::new(RuntimeServer::new(Arc::new(RuntimeOptions::default())));
         let (mut client, daemon) = UnixStream::pair()?;
         let server_thread = Arc::clone(&server);
         let handle = thread::spawn(move || handle_connection(&server_thread, daemon));
@@ -1616,9 +2434,15 @@ mod tests {
 
         let (mut client, daemon) = UnixStream::pair()?;
         let handle = thread::spawn(move || handle_connection(&server, daemon));
-        client.write_all(&vec![b'x'; MAX_FRAME + 1])?;
-        client.write_all(b"\n")?;
-        client.shutdown(Shutdown::Write)?;
+        // The daemon may reject and close before the whole oversized frame
+        // is written; a broken pipe here is the expected rejection race.
+        let sent = client
+            .write_all(&vec![b'x'; MAX_FRAME + 1])
+            .and_then(|()| client.write_all(b"\n"));
+        if let Err(error) = sent {
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        }
+        let _ = client.shutdown(Shutdown::Write);
         let frame = read_frame(&mut BufReader::new(client), MAX_FRAME)?.unwrap();
         let response: WireResponse = serde_json::from_slice(&frame)?;
         assert!(!response.ok);
@@ -1638,6 +2462,7 @@ mod tests {
             subscribers: Vec::new(),
             next_subscriber: 2,
             bytes_since_rebase: 0,
+            swapped: None,
         };
         let (sender, _receiver) = mpsc::sync_channel(SUBSCRIBER_QUEUE);
         model.subscribers.push(Subscriber { id: 1, sender });
@@ -1690,7 +2515,7 @@ mod tests {
     #[test]
     fn idle_disconnected_subscriber_releases_its_slot() -> Result<()> {
         let temp = TempDir::new()?;
-        let server = Arc::new(RuntimeServer::new());
+        let server = Arc::new(RuntimeServer::new(Arc::new(RuntimeOptions::default())));
         server.create("pty-idle", temp.path())?;
         for _ in 0..(MAX_SUBSCRIBERS_PER_SESSION + 2) {
             let (mut client, daemon) = UnixStream::pair()?;

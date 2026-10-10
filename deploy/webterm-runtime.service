@@ -15,6 +15,9 @@ KillMode=control-group
 StateDirectory=webterm
 StateDirectoryMode=0700
 UMask=0077
+# Thousands of terminals each hold a PTY, wake pipe and threads.
+LimitNOFILE=65536
+TasksMax=infinity
 # This process is the user terminal boundary. Do not apply privilege/mount
 # sandboxing here: child shells must retain normal host semantics, including
 # setuid sudo and root writes. The HTTP frontend remains separately hardened.

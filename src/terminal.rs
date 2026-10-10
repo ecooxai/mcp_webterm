@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 
@@ -79,6 +82,29 @@ impl TerminalManager {
                 self.legacy.has_session(session_id)
             }
         }
+    }
+
+    /// Liveness for many sessions at once. Native sessions use one runtime
+    /// RPC; an older runtime without `list` falls back to per-session checks.
+    pub fn live_sessions<'a>(
+        &self,
+        session_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<HashMap<String, bool>> {
+        let ids: Vec<&str> = session_ids.into_iter().collect();
+        let native = if ids.iter().any(|id| id.starts_with(NATIVE_PREFIX)) {
+            self.native.list_sessions().ok()
+        } else {
+            None
+        };
+        let mut live = HashMap::with_capacity(ids.len());
+        for id in ids {
+            let alive = match (&native, backend_for_session(id)?) {
+                (Some(native), TerminalBackend::NativePty) => native.contains(id),
+                _ => self.has_session(id)?,
+            };
+            live.insert(id.to_owned(), alive);
+        }
+        Ok(live)
     }
 
     pub fn write(&self, session_id: &str, data: &str, enter: bool) -> Result<()> {

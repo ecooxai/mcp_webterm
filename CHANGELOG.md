@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.2.5 - 2026-10-10
+
+- Remove the 32-terminal native runtime limit; creation is bounded only by OS resources. The runtime raises its descriptor limit and uses 256 KiB session thread stacks.
+- Hibernate terminals idle for 1 hour (`runtime_idle_seconds`, `WEBTERM_IDLE_SECONDS`): the screen/history moves to a private swap file in `$TMPDIR`, falling back to `/var/tmp` and the state directory when a folder is full or unusable. Idle prompt shells are ended and transparently restarted in the same folder on next input or view; terminals running jobs keep their processes.
+- PTY readers block on a wake pipe instead of polling every 100 ms, so idle terminals use no CPU.
+- Add batch `list`/`stats` runtime RPCs; workspace tree, MCP list/status and reconciliation make one runtime call instead of one per terminal. Add `webterm runtime-stats`.
+- Add `tests/runtime_stress.py` (2000 terminals: CPU, RSS, hibernation, resume, cleanup).
+
 ## 0.2.4 - 2026-10-05
 
 - Rebuild and publish the current WebTerm source for Linux x86_64 using GNU/glibc, with commit metadata and verified SHA-256 checksums.

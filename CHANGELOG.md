@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- MCP instructions and tool schemas ask for an honest quality score `n/100` (100 = perfect) instead of a progress number.
+- The server tracks each task's total running time (latest call minus first call) and call count; `/log` shows them on every call and in a recent-task bar that filters by task. A task idle for 5 minutes with no running call restarts as `NAME-2`, `NAME-3`, ...
+- `get_image` returns JPEG quality 90 at the original resolution by default; `jpeg: false` returns the original file.
+- Reloading the web app reopens the last workspace and terminal.
+- The sign-in form hides as soon as the password is accepted; a saved password shows a connecting status instead of the form, and the file-preview worker no longer delays opening terminals.
+
 ## 0.2.5 - 2026-10-10
 
 - Remove the 32-terminal native runtime limit; creation is bounded only by OS resources. The runtime raises its descriptor limit and uses 256 KiB session thread stacks.

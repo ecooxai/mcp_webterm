@@ -4,6 +4,7 @@
     dialog,
     rows,
     info,
+    taskBar,
     filters,
     pager,
     timer = 0,
@@ -31,6 +32,16 @@
       : n > 1024
         ? `${(n / 1024).toFixed(1)} KB`
         : `${n} B`;
+  const elapsed = (ms) => {
+    const s = Math.max(0, Math.round((ms || 0) / 1000));
+    const h = Math.floor(s / 3600),
+      m = Math.floor((s % 3600) / 60),
+      sec = s % 60;
+    if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+    if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
+    return `${sec}s`;
+  };
+  const callCount = (n) => `${Number(n).toLocaleString()} ${n === 1 ? "call" : "calls"}`;
   function init(context) {
     ctx = context;
     dialog = el("dialog", "tool-log-dialog");
@@ -140,6 +151,9 @@
     });
     info = el("div", "tool-log-info", "Loading…");
     info.setAttribute("role", "status");
+    taskBar = el("div", "tool-log-tasks");
+    taskBar.id = "tool-log-tasks";
+    taskBar.setAttribute("aria-label", "Recent tasks: total time and calls");
     rows = el("div", "tool-log-rows");
     rows.id = "tool-log-rows";
     pager = el("footer", "tool-log-pager");
@@ -162,7 +176,7 @@
       "Keeps 2,000 calls. Large payloads are bounded; credentials and images are redacted.",
     );
     pager.append(note);
-    dialog.append(head, filters, info, rows, pager);
+    dialog.append(head, filters, info, taskBar, rows, pager);
     dialog.addEventListener("cancel", (e) => {
       e.preventDefault();
       close();
@@ -206,6 +220,7 @@
       if (seq !== generation || !dialog.open) return;
       snapshot = body.snapshot;
       info.textContent = `${body.total} matching calls · ${paused ? "Live paused" : offset ? "History page" : "Updates every 5 seconds"} · ${new Date().toLocaleTimeString()}`;
+      renderTasks(body.tasks || []);
       render(body.entries);
       pager.firstElementChild.disabled = offset === 0;
       pager.children[2].disabled = offset + 100 >= body.total;
@@ -217,6 +232,25 @@
         info.textContent =
           error.message || "Logs could not be loaded. Retrying…";
     }
+  }
+  function renderTasks(tasks) {
+    taskBar.hidden = !tasks.length;
+    taskBar.replaceChildren(
+      ...tasks.map((task) => {
+        const chip = btn("", "tool-log-task-chip", () => {
+          filters.elements.task.value = task.name;
+          reset();
+        });
+        chip.dataset.active = String(Boolean(task.task_active));
+        chip.title = `Filter by ${task.name}${task.workspace ? ` · ${task.workspace}` : ""}`;
+        chip.append(
+          el("span", "task-chip-dot"),
+          el("strong", "task-chip-name", task.name),
+          el("span", "task-chip-stats", `${elapsed(task.task_total_ms)} · ${callCount(task.task_calls || 0)}`),
+        );
+        return chip;
+      }),
+    );
   }
   function render(entries) {
     const old = new Map(
@@ -246,6 +280,7 @@
         const context = el("div", "log-context");
         context.append(
           el("strong", "log-task"),
+          el("span", "log-task-stats"),
           el("span", "log-summary"),
           el("code", "log-workspace"),
           el("span", "log-sizes"),
@@ -267,6 +302,15 @@
           : `${entry.duration_ms.toLocaleString()} ms`;
       card.querySelector(".log-task").textContent =
         entry.task || "Untracked call";
+      const stats = card.querySelector(".log-task-stats");
+      stats.hidden = entry.task_calls == null;
+      stats.dataset.active = String(Boolean(entry.task_active));
+      stats.textContent = entry.task_calls == null
+        ? ""
+        : `Task ${elapsed(entry.task_total_ms)} total · ${callCount(entry.task_calls)}${entry.task_running ? " · running" : entry.task_active ? " · active" : ""}`;
+      stats.title = entry.task_calls == null
+        ? ""
+        : `First call ${new Date(entry.task_first_ms).toLocaleString()} · latest ${new Date(entry.task_last_ms).toLocaleString()}`;
       card.querySelector(".log-summary").textContent = entry.summary;
       card.querySelector(".log-workspace").textContent = entry.workspace;
       card.querySelector(".log-sizes").textContent =
@@ -342,5 +386,5 @@
       panel.textContent = error.message || "Payload unavailable";
     }
   }
-  window.WebTermLog = { init, open, close, formatOutput };
+  window.WebTermLog = { init, open, close, formatOutput, elapsed };
 })();

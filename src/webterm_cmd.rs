@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 pub const MAX_CMD_BYTES: usize = 96 * 1024;
 pub const DESCRIPTION: &str = "Bash/terminal controls. workspace_id is required on every call (workspace folder or name); it is the cwd and scope, so cmd/text use relative paths only. Prefer cmd='webterm run', workspace_id='/project/app', text='pytest tests/'. Results default to first 200 + last 800 characters; if omitted/read_more appears, use webterm read ID --full, never rerun. run/python remain capped even with --full. Errors include stderr in text. write sends input once; read its ID for execution results. Create a descriptive task name at task start and reuse across calls/follow-up chats, not webterm/run. Summary: start with an honest quality score n/100 of the current work (100 = perfect), then concrete status, under 50 words; no progress numbers. The server tracks task time and call counts. text is literal; Bash pipelines work without text.";
-pub const INSTRUCTIONS: &str = "Always pass workspace_id (workspace folder or name); cmd and text then use relative paths only, e.g. webterm(cmd='webterm run', workspace_id='/project/app', text='ls src'). get_image path is relative to workspace_id too. Results: first 200 + last 800 chars, including stderr on errors. For omitted/read_more use webterm read ID --full, never rerun. Only explicit read expands output. write sends input; read its ID for results. Reuse a descriptive task name across calls/follow-up chats. Always supply task and summary; summary starts with an honest quality score n/100 (100 = perfect), then status, under 50 words. No progress numbers. Bash pipes work without text; get_image returns JPEG; prefer it over jpeg=false.";
+pub const INSTRUCTIONS: &str = "Always pass workspace_id (folder or workspace name); cmd/text use relative paths, e.g. webterm(cmd='webterm run', workspace_id='/project/app', text='ls src'). get_image path is relative too. Results: first 200 + last 800 chars, stderr on errors. For omitted/read_more use webterm read ID --full, never rerun. write sends input; read its ID for results. Reuse a descriptive task name across calls. Always supply task and summary: honest quality score n/100 (100 = perfect), then status, under 50 words, no progress numbers. Bash pipes work without text; get_image returns JPEG; avoid jpeg=false.";
 
 #[derive(Debug, Clone)]
 pub struct Parsed {
@@ -566,7 +566,7 @@ mod tests {
             "webterm",
             "nope",
             "read /tmp",
-            "new relative",
+            "new relative extra",
             "read /tmp 0",
             "read /tmp -1",
             "read /tmp 999999999999999999999999999",

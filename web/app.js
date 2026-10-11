@@ -29,6 +29,7 @@
     sessions: new Map(),
     activeId: null,
     activeWorkspaceId: null,
+    shownWorkspaceId: null,
     ensureInFlight: new Set(),
     ensureAttempted: new Set(),
     ctrlPending: false,
@@ -615,7 +616,9 @@
 
   function renderNavigation() {
     const active = state.workspaces.find((item) => item.id === state.activeWorkspaceId) || state.workspaces[0];
-    if (active) state.expanded.add(active.id);
+    // Expand a workspace when it becomes the shown one; afterwards folding stays user-controlled.
+    if (active && active.id !== state.shownWorkspaceId) state.expanded.add(active.id);
+    state.shownWorkspaceId = active?.id || null;
     renderWorkspaceSwitcher(active);
     patchKeyedList(
       elements.workspaceList,

@@ -15,7 +15,7 @@ def exercise(rpc,check,workspace,other,tid,done,root):
         check('single-copy result without legacy output key', result['content']==[] and 'output' not in result['structuredContent'], result)
         return result['structuredContent']
     def args(cmd,**extra):
-        return {'cmd':cmd,'workspace':str(workspace),'task':'Metadata read','summary':'55/100 Reading metadata and current progress',**extra}
+        return {'cmd':cmd,'workspace_id':str(workspace),'task':'Metadata read','summary':'55/100 Reading metadata and current progress',**extra}
     summary='56/100 '+' '.join(['current']*48)
     result=call(args(f'webterm read {done["terminal_id"]}',summary=summary))
     check('read supports explicit workspace task and 49-word summary',result['text']==done['text'])
@@ -34,26 +34,26 @@ def exercise(rpc,check,workspace,other,tid,done,root):
     malicious=f'touch {shlex.quote(str(marker))}'
     base=args(f'webterm write {tid} --enter',text=malicious)
     for changes in [
-        {'workspace':str(other)}, {'workspace':'relative'}, {'workspace':'/'},
-        {'workspace':None},{'workspace':123},{'summary':'101/100 Invalid'},
+        {'workspace_id':str(other)}, {'workspace_id':'relative'}, {'workspace_id':'/'},
+        {'workspace_id':None},{'workspace_id':123},{'workspace':str(workspace)},{'summary':'101/100 Invalid'},
         {'summary':'55/100 '+('word '*49)}, {'summary':'55/100 two\nlines'},
         {'summary':None},{'task':None},{'task':''},
     ]:
         call({**base,**changes},error=True)
     missing=dict(base);del missing['task'];call(missing,error=True)
     missing=dict(base);del missing['summary'];call(missing,error=True)
-    call({**base,'cmd':f'webterm write {shlex.quote(str(workspace))} {tid} --enter','workspace':str(other)},error=True)
+    call({**base,'cmd':f'webterm write {shlex.quote(str(workspace))} {tid} --enter','workspace_id':str(other)},error=True)
     time.sleep(.1)
     check('invalid metadata and workspace mismatch have no write effects',not marker.exists())
     # Ordinary Bash uses the selected cwd as well, without global context leakage.
     ordinary=call(args('pwd',task='Metadata cwd',summary='70/100 Verifying selected Bash workspace'))
     check('workspace sets ordinary Bash cwd',ordinary['text'].strip()==str(workspace),ordinary)
-    call({'cmd':f'webterm stop {ordinary["terminal_id"]}'})
-    second=call({'cmd':f'webterm run {shlex.quote(str(other))}','text':'printf OTHER_METADATA','workspace':str(other),'task':'Metadata other','summary':'72/100 Preparing independent workspace output'})
-    call({'cmd':f'webterm stop {second["terminal_id"]}'})
+    call({'cmd':f'webterm stop {ordinary["terminal_id"]}','workspace_id':str(workspace)})
+    second=call({'cmd':f'webterm run {shlex.quote(str(other))}','text':'printf OTHER_METADATA','workspace_id':str(other),'task':'Metadata other','summary':'72/100 Preparing independent workspace output'})
+    call({'cmd':f'webterm stop {second["terminal_id"]}','workspace_id':str(other)})
     def parallel(i):
         ws,terminal,expected=(workspace,done['terminal_id'],done['text']) if i%2==0 else (other,second['terminal_id'],'OTHER_METADATA')
-        value=call({'cmd':f'webterm read {terminal}','workspace':str(ws),'task':f'Metadata parallel {i}','summary':f'{i}/100 Reading independent workspace progress'})
+        value=call({'cmd':f'webterm read {terminal}','workspace_id':str(ws),'task':f'Metadata parallel {i}','summary':f'{i}/100 Reading independent workspace progress'})
         return value['text']==expected
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         check('concurrent calls never share workspace context',all(pool.map(parallel,range(8))))
@@ -72,8 +72,11 @@ def exercise(rpc,check,workspace,other,tid,done,root):
         extra={'text':payload} if payload is not None else {}
         value=call(args(header,**extra))
         check('workspace-only command executes in selected directory: '+header, value['text'].strip()==expected,value)
-        call({'cmd':f'webterm stop {value["terminal_id"]}'})
+        call({'cmd':f'webterm stop {value["terminal_id"]}','workspace_id':str(workspace)})
     call({'cmd':'webterm run','text':'pwd'},error=True)
+    legacy=call({'cmd':'webterm run','text':'pwd','workspace':str(other),'task':'Metadata legacy alias','summary':'71/100 Verifying legacy workspace alias'})
+    check('legacy workspace alias sets cwd',legacy['text'].strip()==str(other),legacy)
+    call({'cmd':f'webterm stop {legacy["terminal_id"]}','workspace_id':str(other)})
     bad_marker=other/'workspace-mismatch-must-not-execute'
     call(args(f'webterm run {shlex.quote(str(other))}', text=f'touch {shlex.quote(str(bad_marker))}'),error=True)
     check('conflicting run workspace rejected before execution',not bad_marker.exists())
@@ -84,10 +87,10 @@ def exercise(rpc,check,workspace,other,tid,done,root):
         final=call(args(f'webterm read {pending["terminal_id"]} --wait 1'))
         if not final['running']:break
     check('workspace-only async command polled without resubmission', final['text']=='WORKSPACE_ASYNC' and marker.read_text()=='once',final)
-    call({'cmd':f'webterm stop {pending["terminal_id"]}'})
+    call({'cmd':f'webterm stop {pending["terminal_id"]}','workspace_id':str(workspace)})
 
     with sqlite3.connect(root/'state.mcp-log.db') as db:
         raw=db.execute('select arguments,workspace,task,summary from calls where task=? and arguments like ? order by id desc limit 1',('Metadata read','%webterm run --full%')).fetchone()
         logged=json.loads(raw[0])
-        check('audit stores only actual input fields, without synthetic duplicate workspace_id', 'workspace' in logged and 'workspace_id' not in logged and logged['cmd']=='webterm run --full',logged)
+        check('audit stores only actual input fields, without synthetic duplicate workspace', 'workspace_id' in logged and 'workspace' not in logged and logged['cmd']=='webterm run --full',logged)
         check('workspace-only task metadata remains attached to logs',raw[1]==str(workspace) and raw[2]=='Metadata read' and raw[3].startswith('55/100'),raw[1:])

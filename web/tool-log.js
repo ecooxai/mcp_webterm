@@ -162,7 +162,10 @@
   }
   function open() {
     if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
+    if (!dialog.open) {
+      dialog.showModal();
+      filters.elements.q.focus();
+    }
     reset();
     clearInterval(timer);
     timer = setInterval(() => {

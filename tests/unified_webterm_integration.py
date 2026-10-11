@@ -34,6 +34,8 @@ workspace = root / 'workspaces' / 'a space 界'
 other = root / 'workspaces' / 'other'
 allowed = root / 'workspaces'
 allowed.mkdir()
+workspace.mkdir()
+other.mkdir()
 token = secrets.token_urlsafe(32)
 password = secrets.token_urlsafe(18)
 (root / 'token').write_text(token)
@@ -70,8 +72,8 @@ def rpc(method, params=None, auth=True, extra=None):
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 
-def call(cmd, error=False):
-    response=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm cmd '+shlex.quote(cmd)}})
+def call(cmd, error=False, ws=None):
+    response=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm cmd '+shlex.quote(cmd),'workspace_id':str(ws or workspace)}})
     result=response.get('result',{})
     if error:
         check('rejected: '+cmd[:85], result.get('isError') is True, result)
@@ -85,7 +87,7 @@ def call(cmd, error=False):
 def finish(ws, terminal_id):
     deadline=time.monotonic()+10
     while time.monotonic()<deadline:
-        value=call(f'read {shlex.quote(str(ws))} {terminal_id} --wait 2')
+        value=call(f'read {shlex.quote(str(ws))} {terminal_id} --wait 2',ws=ws)
         if not value['running']:
             return value
     raise AssertionError('command did not complete')
@@ -119,23 +121,36 @@ try:
     discovery=rpc('tools/list')
     tools=discovery['result']['tools']
     check('exactly one terminal tool plus native image tool',[t['name'] for t in tools]==['webterm','get_image'])
-    check('single required cmd parameter',tools[0]['inputSchema']['required']==['cmd'] and set(tools[0]['inputSchema']['properties'])=={'cmd','text','workspace','task','summary'})
+    check('cmd and workspace_id are the required parameters',tools[0]['inputSchema']['required']==['cmd','workspace_id'] and set(tools[0]['inputSchema']['properties'])=={'cmd','text','workspace_id','task','summary'})
     check('conservative destructive annotation',tools[0]['annotations']['destructiveHint'] is True and tools[0]['annotations']['readOnlyHint'] is False)
     init=rpc('initialize',{'protocolVersion':'2025-11-25','clientInfo':{'name':'test','version':'1'},'capabilities':{}})
     check('compact initialization instructions',len(init['result']['instructions'])<600)
     for auth,headers,status in [(False,None,401),(True,{'Origin':'https://invalid.example'},403)]:
         try:rpc('ping',auth=auth,extra=headers);raise AssertionError('unauthorized call allowed')
         except urllib.error.HTTPError as e:check('authentication/origin '+str(status),e.code==status)
-    check('help without workspace',len(call('webterm help')['commands'])>=10)
+    check('help with workspace_id',len(call('webterm help')['commands'])>=10)
+    r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm help'}})['result']
+    check('webterm requires workspace_id',r.get('isError') is True and 'workspace_id is required' in json.dumps(r),r)
+    r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm help','workspace':str(workspace)}})['result']
+    check('legacy workspace alias still accepted',r.get('isError') is False,r)
+    r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm help','workspace_id':str(workspace),'workspace':str(workspace)}})['result']
+    check('workspace_id and legacy alias together rejected',r.get('isError') is True,r)
     check('targeted help',len(call('help read')['commands'])==1)
     for args in [{},{'cmd':1},{'cmd':'status','extra':True}]:
         r=rpc('tools/call',{'name':'webterm','arguments':args})
         check('strict JSON argument schema',r['result']['isError'] is True)
     q=shlex.quote(str(workspace)); qo=shlex.quote(str(other))
-    call(f'ensure {q}');call(f'ensure {qo}')
+    call(f'ensure {q}');call(f'ensure {qo}',ws=other)
     check('canonical workspace identity',call(f'ensure {q}')['workspace_id']==str(workspace))
-    v=call('ls --limit 1');check('workspace pagination',v['total']==2 and v['next_offset']==1 and len(v['workspaces'])==1)
-    check('last page has no next_offset','next_offset' not in call('ls --limit 1 --offset 1'))
+    v=call('ls workspaces --limit 1');check('workspace pagination',v['total']==2 and v['next_offset']==1 and len(v['workspaces'])==1)
+    check('last page has no next_offset','next_offset' not in call('ls workspaces --limit 1 --offset 1'))
+    name=next(w['name'] for w in call('ls workspaces')['workspaces'] if w['workspace_id']==str(workspace))
+    named=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm run','text':'pwd','workspace_id':name}})['result']
+    check('workspace_id accepts a registered workspace name',named.get('isError') is False and named['structuredContent']['text'].strip()==str(workspace),named)
+    created.append((workspace,named['structuredContent']['terminal_id']))
+    tab=rpc('tools/call',{'name':'webterm','arguments':{'cmd':'webterm new named-tab','workspace_id':str(workspace)}})['result']
+    check('new NAME uses workspace_id without a path',tab.get('isError') is False and tab['structuredContent']['name']=='named-tab' and tab['structuredContent']['workspace_id']==str(workspace),tab)
+    created.append((workspace,tab['structuredContent']['terminal_id']))
     call(f'new {q} --cols 1',error=True)
     terminal=call(f'webterm new {q} --name interactive --cols 100 --rows 30')
     tid=terminal['terminal_id'];created.append((workspace,tid))
@@ -182,24 +197,24 @@ try:
     check('filter exit distinct from original exit',filterfail['exit_code']==0 and filterfail['filter_exit_code']==1)
     one=call(f'read {q} {py["terminal_id"]} --max-chars 1')
     check('one-character output budget',len(one['text'])==1 and one['omitted']>0)
-    call(f'read {qo} {tid}',error=True)
-    call(f'stop {qo} {tid}',error=True)
-    call('new relative',error=True)
+    call(f'read {qo} {tid}',error=True,ws=other)
+    call(f'stop {qo} {tid}',error=True,ws=other)
+    call('new relative extra',error=True)
     call(f'new {q} --rows 99999',error=True)
     call(f'read {q} 0',error=True)
     call(f'read {q} {tid} --full --full',error=True)
     call(f'read {q} {tid} --wait 1 --filter cat',error=True)
     call(f'write {q} {tid} -- '+'界'*21846,error=True)
     denied=root/'outside'/'new'
-    call(f'ensure {denied}',error=True);check('root restriction prevents directory creation',not denied.exists())
+    call(f'ensure {denied}',error=True,ws=denied);check('root restriction prevents directory creation',not denied.exists())
     missing=allowed/'should-not-exist'
-    call(f'new {missing} --task test --summary "101/100 Wrong"',error=True)
+    call(f'new {missing} --task test --summary "101/100 Wrong"',error=True,ws=missing)
     check('tracking rejected before side effects',not missing.exists())
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-        parallel=list(pool.map(lambda _:call(f'new {qo}'),range(6)))
+        parallel=list(pool.map(lambda _:call(f'new {qo}',ws=other),range(6)))
     ids=[v['terminal_id'] for v in parallel];created.extend((other,i) for i in ids)
     check('concurrent new allocates distinct terminals',len(set(ids))==6)
-    page=call(f'ls {qo} --limit 2')
+    page=call(f'ls {qo} --limit 2',ws=other)
     check('terminal list pagination is compact',page['total']==6 and page['next_offset']==2 and all('workspace_id' not in t for t in page['terminals']))
     tracked=call(f'run {q} --task integration --summary "75/100 Testing audit attribution" -- printf tracked')
     created.append((workspace,tracked['terminal_id']))
@@ -246,7 +261,7 @@ try:
     for asset in ['/assets/app.js','/assets/app.css']:
         with opener.open(base+asset,timeout=10) as r:check('web asset '+asset,r.status==200 and len(r.read())>100)
     def text_call(command, payload, error=False):
-        result=rpc('tools/call',{'name':'webterm','arguments':{'cmd':command,'text':payload}})['result']
+        result=rpc('tools/call',{'name':'webterm','arguments':{'cmd':command,'text':payload,'workspace_id':str(workspace)}})['result']
         check('text error contract' if error else 'text success contract',result.get('isError') is error,result)
         return result if error else result['structuredContent']
     literal="  printf '%s\\n' 'single quote: '\"'\"' ; dollar: $HOME ; pipe: |'\nprintf '%s\\n' 'Unicode 界🙂'\n"
@@ -286,8 +301,8 @@ try:
 
     # The public cmd argument is real Bash; legacy tests above use the explicit
     # `webterm cmd 'legacy grammar'` CLI compatibility route.
-    def shell(command, expected_error=False):
-        result=rpc('tools/call',{'name':'webterm','arguments':{'cmd':command}})['result']
+    def shell(command, expected_error=False, ws=None):
+        result=rpc('tools/call',{'name':'webterm','arguments':{'cmd':command,'workspace_id':str(ws or workspace)}})['result']
         if expected_error:
             check('Bash native validation error',result.get('isError') is True,result)
             return result
@@ -321,10 +336,10 @@ try:
     slots_after=call('status')['running_terminals']
     check('repeated read pipelines consume zero PTY slots',slots_before==slots_after,(slots_before,slots_after))
     result=shell('printf ordinary-bash')
-    created.append((root/'workspaces',result['terminal_id']))
+    created.append((workspace,result['terminal_id']))
     check('ordinary command really executes Bash',result['text']=='ordinary-bash' and result['exit_code']==0)
     result=shell('false | true')
-    created.append((root/'workspaces',result['terminal_id']))
+    created.append((workspace,result['terminal_id']))
     check('Bash pipefail preserves upstream failure',result['exit_code']==1)
     result=shell(f'webterm run {q} --wait 0 -- '+shlex.quote('sleep 0.5; printf native-async'))
     created.append((workspace,result['terminal_id']))
@@ -341,14 +356,14 @@ try:
     repeated=shell(f'webterm read {tid} --if-changed {first["snapshot"]} --wait 0.2')
     check('raw change-only long poll is bounded',repeated.get('unchanged') is True and time.monotonic()-began>=0.18)
     listed=shell('ls -d .')
-    created.append((root/'workspaces',listed['terminal_id']))
-    check('ordinary ls keeps Bash semantics',listed['text'].strip()=='.' and listed['workspace_id']==str(root/'workspaces'))
+    created.append((workspace,listed['terminal_id']))
+    check('ordinary ls keeps Bash semantics',listed['text'].strip()=='.' and listed['workspace_id']==str(workspace))
     big=shell(f'webterm python {q} -- '+shlex.quote("print('abc\\n'*30000,end='')"))
     created.append((workspace,big['terminal_id']))
     early=shell(f'webterm read {big["terminal_id"]} | head -n 1')
     check('early-closing head pipeline succeeds',early['exit_code']==0 and early['text']=='abc\n',early)
     async_job=shell('sleep 21; printf ordinary-async')
-    created.append((root/'workspaces',async_job['terminal_id']))
+    created.append((workspace,async_job['terminal_id']))
     check('ordinary long Bash returns durable handle',async_job['running'] is True and isinstance(async_job['workspace_id'],str))
     finished=shell(f'webterm read {async_job["terminal_id"]} --json --wait 4')
     check('ordinary Bash survives tool return',not finished['running'] and finished['text']=='ordinary-async')
@@ -359,7 +374,7 @@ try:
     filled=[]
     try:
         for _ in range(40):
-            r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':f'webterm new {qo}'}})['result']
+            r=rpc('tools/call',{'name':'webterm','arguments':{'cmd':f'webterm new {qo}','workspace_id':str(other)}})['result']
             if r.get('isError'):break
             n=r['structuredContent']['terminal_id'];filled.append(n);created.append((other,n))
         check('runtime creates more than 32 terminals',len(filled)==40,len(filled))
@@ -368,7 +383,7 @@ try:
         result=shell('webterm ls terminals --limit 1')
         check('listing works with many terminals',len(result['terminals'])==1)
     finally:
-        for n in filled:shell(f'webterm stop {n}')
+        for n in filled:shell(f'webterm stop {n}',ws=other)
 
     from webterm_metadata_integration import exercise
     exercise(rpc,check,workspace,other,tid,done,root)
@@ -398,7 +413,7 @@ except Exception as exc:
     report={'passed':len(checks),'failed':1,'checks':checks,'error':repr(exc),'elapsed_s':round(time.monotonic()-started,3)}
 finally:
     for ws,tid in created:
-        try:call(f'stop {shlex.quote(str(ws))} {tid}')
+        try:call(f'stop {shlex.quote(str(ws))} {tid}',ws=ws)
         except Exception:pass
     for proc,log in reversed(processes):
         if proc.poll() is None:

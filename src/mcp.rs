@@ -355,7 +355,10 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
                 &["cmd", "text", "workspace_id", "workspace", "task", "summary"],
             )?;
             let workspace = match (optional_string(&arguments, "workspace_id")?, optional_string(&arguments, "workspace")?) {
-                (Some(id), _) | (None, Some(id)) => resolve_workspace_ref(&config, id)?,
+                (Some(_), Some(_)) => {
+                    bail!("pass workspace_id only; workspace is a legacy alias")
+                }
+                (Some(id), None) | (None, Some(id)) => resolve_workspace_ref(&config, id)?,
                 (None, None) => bail!(
                     "workspace_id is required: pass the workspace folder (absolute path or workspace name) once; cmd and text then use paths relative to it"
                 ),
@@ -2429,7 +2432,10 @@ mod compact_tests {
                 .collect::<Vec<_>>(),
             vec!["webterm", "get_image"]
         );
-        assert_eq!(current[0]["inputSchema"]["required"], json!(["cmd"]));
+        assert_eq!(
+            current[0]["inputSchema"]["required"],
+            json!(["cmd", "workspace_id"])
+        );
         assert_eq!(
             current[0]["inputSchema"]["properties"]
                 .as_object()
@@ -2533,6 +2539,10 @@ mod compact_tests {
         let r = call_tool(c.clone(), p.as_object()).await.unwrap();
         assert_eq!(r["isError"], true);
         assert!(r.to_string().contains("workspace_id is required"));
+        let p = json!({"name":"webterm","arguments":{"cmd":"help","workspace_id":text,"workspace":text}});
+        let r = call_tool(c.clone(), p.as_object()).await.unwrap();
+        assert_eq!(r["isError"], true);
+        assert!(r.to_string().contains("pass workspace_id only"));
         let defs = tool_definitions();
         let webterm = defs.iter().find(|d| d["name"] == "webterm").unwrap();
         assert_eq!(

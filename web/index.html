@@ -65,9 +65,12 @@
         <button id="drawer-scrim" class="drawer-scrim" type="button" aria-label="Close workspaces" tabindex="-1"></button>
         <aside id="sidebar" class="sidebar" aria-label="Workspace navigation">
           <div class="sidebar-header">
-            <div>
-              <p class="eyebrow">Navigation</p>
-              <h2>Workspaces</h2>
+            <div class="workspace-switcher">
+              <button id="workspace-switch" class="workspace-switch" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="workspace-menu" title="Switch workspace">
+                <span id="workspace-switch-name" class="workspace-switch-name">No workspace</span>
+                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+              </button>
+              <div id="workspace-menu" class="workspace-menu" role="listbox" aria-label="Workspaces" hidden></div>
             </div>
             <button id="workspace-create" class="icon-button capability-control" type="button" aria-label="Add workspace" title="Add workspace" hidden>+</button>
           </div>

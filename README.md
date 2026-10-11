@@ -12,7 +12,7 @@ The Colab gateway embeds a measured in-instance uptime panel and an explicit Sta
 
 ## Literal text payloads and fast sign-in
 
-Prefer `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"code"})` and `webterm({"cmd":"webterm write ID --enter","text":"input"})`. The optional text payload is preserved literally and kept out of outer-shell parsing. Existing Bash pipeline calls work without `text`. The sign-in page now loads independently of the terminal application and is served locally by the Colab gateway. See [the command and sign-in guide](docs/webterm-command.md).
+Every `webterm` call requires `workspace_id` (an absolute workspace folder or a registered workspace name); it is the cwd and scope, so `cmd` and `text` use relative paths only. Prefer `webterm({"cmd":"webterm run","workspace_id":"/home/dev/project/app","text":"pytest tests/"})` and `webterm({"cmd":"webterm write ID --enter","workspace_id":"app","text":"input"})`. `get_image` paths are relative to `workspace_id` as well. The optional text payload is preserved literally and kept out of outer-shell parsing. Existing Bash pipeline calls work without `text`. The sign-in page now loads independently of the terminal application and is served locally by the Colab gateway. See [the command and sign-in guide](docs/webterm-command.md).
 
 ## Bash-backed compact MCP interface
 
@@ -221,7 +221,7 @@ The normal WebTerm config still controls the main/control listener. Example:
     database_path = "/var/lib/webterm/webterm.db"
     runtime_socket = "/var/lib/webterm/runtime.sock"
     tmux_socket = "/var/lib/webterm/tmux.sock"
-    workspace_roots = ["/home/admin/project"]
+    workspace_roots = ["/"]
     auth_token_file = "/etc/webterm/token"
 
 When webterm serve starts, it also binds the URL proxy to 0.0.0.0:1080. Permit
@@ -565,7 +565,7 @@ python -m pytest tests/web/test_explorer_live.py -q
 
 ## Workspace-only commands and task continuity
 
-Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"70/100 Parser fixed; verifying the build"})`.
+Use `webterm({"cmd":"webterm run","workspace_id":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"70/100 Parser fixed; verifying the build"})`.
 The workspace parameter sets the working directory for run/python and ordinary Bash, and scopes reads/writes. Do not repeat the path in cmd. Legacy positional paths still work; a conflicting path is rejected before execution.
 
 Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with an honest quality score `n/100` for the current work (100 = perfect), give concrete current status, and contain fewer than 50 words. Do not send progress numbers or claim completion before testing.

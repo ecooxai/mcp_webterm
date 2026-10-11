@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7 - 2026-10-11
+
+- The `webterm` MCP tool requires `workspace_id` (absolute folder or registered workspace name). It is the cwd and scope, so `cmd` and `text` only need relative paths; `webterm new NAME` no longer needs a path. `get_image` accepts workspace names too.
+- `/log`: one search box (also matches commands and paths) applied 2 s after typing, no Apply button; header text, `Open /log` and Sign out removed; pause/resume is an icon at the top right with the status and sort selects beside it. Sorting by largest output lists only `webterm` calls.
+- Sidebar: a workspace selector replaces the Navigation/Workspaces heading and shows the current workspace; the list shows the active workspace. The file search sits in the folder top bar (no Files/Every 5s text) and search results list the newest files first.
+- `workspace_roots` defaults to `["/"]`. The new-workspace picker opens at `$HOME`, can go up, has no name field, and selects the folder you open; the workspace is named after the folder.
+
 ## 0.2.6 - 2026-10-10
 
 - `/log` shows the webterm `cmd` under each webterm call title and the file path under each `get_image` title.

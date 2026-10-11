@@ -292,7 +292,15 @@ pub fn page(config: &Config, q: &Query) -> Result<Value> {
     let workspace = q.workspace.as_deref().unwrap_or("");
     let task = q.task.as_deref().unwrap_or("");
     let status = q.status.as_deref().unwrap_or("");
-    let filter = "c.id<=?1 AND (?2='' OR instr(lower(c.tool||' '||c.task||' '||c.summary||' '||c.workspace),lower(?2))>0) AND (?3='' OR c.workspace=?3) AND (?4='' OR c.task=?4) AND (?5='' OR c.status=?5)";
+    let filter = format!(
+        "{}{}",
+        "c.id<=?1 AND (?2='' OR instr(lower(c.tool||' '||c.task||' '||c.summary||' '||c.workspace||' '||c.arguments),lower(?2))>0) AND (?3='' OR c.workspace=?3) AND (?4='' OR c.task=?4) AND (?5='' OR c.status=?5)",
+        if q.sort.as_deref() == Some("output_size") {
+            " AND c.tool='webterm'"
+        } else {
+            ""
+        }
+    );
     let at = now();
     let total: i64 = d.query_row(
         &format!("SELECT count(*) FROM calls c WHERE {filter}"),

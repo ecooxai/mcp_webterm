@@ -547,9 +547,7 @@ async fn browser_folders(
 fn folder_listing(config: &Config, requested: Option<&FsPath>) -> Result<FolderListing> {
     crate::db::ensure_default_workspace_folder(config)?;
     let roots = crate::db::canonical_workspace_roots(config)?;
-    let preferred = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("project"));
+    let preferred = std::env::var_os("HOME").map(PathBuf::from);
     let requested = requested
         .map(PathBuf::from)
         .or_else(|| {
@@ -649,7 +647,8 @@ async fn browser_workspaces(State(state): State<AppState>, headers: HeaderMap) -
 
 #[derive(Deserialize)]
 struct CreateWorkspaceRequest {
-    name: String,
+    #[serde(default)]
+    name: Option<String>,
     path: PathBuf,
 }
 
@@ -676,8 +675,11 @@ async fn create_workspace(
     api_task(
         move || {
             let path = crate::db::canonical_workspace_path(&config, &request.path)?;
-            let workspace =
-                Database::open_config(&config)?.create_workspace(&request.name, &path)?;
+            let database = Database::open_config(&config)?;
+            let workspace = match request.name.as_deref().map(str::trim) {
+                Some(name) if !name.is_empty() => database.create_workspace(name, &path)?,
+                _ => database.ensure_workspace(&path)?,
+            };
             Ok(WorkspaceResponse {
                 workspace: workspace_tree(workspace, Vec::new()),
             })

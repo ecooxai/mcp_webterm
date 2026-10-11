@@ -358,6 +358,33 @@ input:hover { border-color: #4a596e; }
 
 .sidebar h2 { margin: 0; font-size: 17px; letter-spacing: -.02em; }
 
+.workspace-switcher { position: relative; flex: 1 1 auto; min-width: 0; margin-right: 10px; }
+.workspace-switch {
+  display: flex; width: 100%; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid #2a3b52; border-radius: 7px; background: #111c2b; color: #e3edf8;
+  font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; text-align: left;
+}
+.workspace-switch:hover, .workspace-switch[aria-expanded="true"] { border-color: #46648a; background: #15243a; }
+.workspace-switch:disabled { cursor: default; opacity: .7; }
+.workspace-switch-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-switch svg { width: 12px; height: 12px; flex: none; color: #8fa6c2; }
+.workspace-switch[aria-expanded="true"] svg { transform: rotate(180deg); }
+.workspace-menu {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; right: -46px;
+  max-height: min(60vh, 420px); overflow: auto; padding: 4px;
+  border: 1px solid #2f4460; border-radius: 8px; background: #0f1926;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+}
+.workspace-menu-item {
+  display: grid; width: 100%; grid-template-columns: 1fr auto; gap: 1px 8px; padding: 7px 9px;
+  border: 0; border-radius: 6px; background: none; color: #d8e5f3; font: inherit; text-align: left; cursor: pointer;
+}
+.workspace-menu-item:hover, .workspace-menu-item:focus-visible { background: #18293f; outline: none; }
+.workspace-menu-item[aria-selected="true"] { background: #15263a; box-shadow: inset 2px 0 0 #5aa9e6; }
+.workspace-menu-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-menu-path { grid-column: 1; font-size: 11px; color: #7f94ad; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-menu-count { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-size: 11px; color: #8fa6c2; }
+
 .workspace-list {
   flex: 1 1 auto;
   min-height: 0;

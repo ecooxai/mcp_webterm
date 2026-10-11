@@ -29,17 +29,23 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
     input.value = "";
+    let signedIn = false;
     try {
       await window.WebTermAuth.login(value);
       value = "";
-      status.textContent = "Signed in. Opening WebTerm…";
+      signedIn = true;
+      // Password accepted: never show the form again while the terminal loads.
+      for (const node of form.querySelectorAll("label, .password-row, #login-submit, #login-error")) node.style.display = "none";
+      status.textContent = "Signed in. Opening your terminals…";
       location.replace(destination + "?app=1&proxyport=0");
     } catch (failure) {
       error.textContent = failure.name === "AbortError" ? "The workspace took too long to respond. Try again when it is ready." : failure.message;
       status.textContent = "Your terminal sessions have not been changed.";
       input.focus({preventScroll:true});
     } finally {
-      value = ""; clearTimeout(timeout); pending = false; button.disabled = false;
+      value = ""; clearTimeout(timeout);
+      if (signedIn) return;
+      pending = false; button.disabled = false;
       button.removeAttribute("aria-busy"); spinner.hidden = true; label.textContent = "Sign in";
     }
   }

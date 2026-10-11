@@ -4,6 +4,7 @@
     dialog,
     rows,
     info,
+    taskBar,
     filters,
     pager,
     timer = 0,
@@ -31,71 +32,35 @@
       : n > 1024
         ? `${(n / 1024).toFixed(1)} KB`
         : `${n} B`;
+  const elapsed = (ms) => {
+    const s = Math.max(0, Math.round((ms || 0) / 1000));
+    const h = Math.floor(s / 3600),
+      m = Math.floor((s % 3600) / 60),
+      sec = s % 60;
+    if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+    if (m) return `${m}m ${String(sec).padStart(2, "0")}s`;
+    return `${sec}s`;
+  };
+  const callCount = (n) => `${Number(n).toLocaleString()} ${n === 1 ? "call" : "calls"}`;
   function init(context) {
     ctx = context;
     dialog = el("dialog", "tool-log-dialog");
     dialog.id = "tool-log-dialog";
     dialog.setAttribute("aria-labelledby", "tool-log-title");
-    const head = el("header", "tool-log-header"),
-      titles = el("div", "");
-    titles.append(el("p", "eyebrow", "Observability"));
-    const title = el("h2", "", "MCP tool calls");
+    const head = el("header", "tool-log-header");
+    const title = el("h2", "sr-only", "MCP tool calls");
     title.id = "tool-log-title";
-    titles.append(
-      title,
-      el(
-        "p",
-        "tool-log-subtitle",
-        "Private execution history · inputs, outputs, timing, and errors",
-      ),
-    );
-    const actions = el("div", "tool-log-actions");
-    const pause = btn("Pause live", "secondary-button", () => {
-      paused = !paused;
-      pause.textContent = paused ? "Resume live" : "Pause live";
-      if (!paused) {
-        offset = 0;
-        snapshot = null;
-        load();
-      }
-    });
-    pause.id = "tool-log-pause";
-    const link = el("a", "text-button", "Open /log ↗");
-    link.href = location.pathname.startsWith("/webterm")
-      ? "/webterm/log"
-      : "/log";
-    link.target = "_blank";
-    link.rel = "noopener";
-    actions.append(
-      link,
-      pause,
-      btn("Sign out", "text-button", () => {
-        close();
-        ctx.logout();
-      }),
-    );
-    const closeBtn = btn("×", "icon-button", close);
-    closeBtn.setAttribute("aria-label", "Close tool logs");
-    actions.append(closeBtn);
-    head.append(titles, actions);
     filters = el("form", "tool-log-filters");
     filters.addEventListener("submit", (e) => {
       e.preventDefault();
+      clearTimeout(debounce);
       reset();
     });
-    const search = el("input", "");
+    const search = el("input", "tool-log-search");
     search.type = "search";
     search.name = "q";
-    search.placeholder = "Search tools, tasks, summaries…";
+    search.placeholder = "Search tools, tasks, commands, workspaces…";
     search.setAttribute("aria-label", "Search tool logs");
-    const workspace = el("input", "");
-    workspace.name = "workspace";
-    workspace.placeholder = "Workspace path";
-    workspace.setAttribute("aria-label", "Filter logs by workspace path");
-    const task = el("input", "");
-    task.name = "task";
-    task.placeholder = "Task name";
-    task.setAttribute("aria-label", "Filter logs by task");
     const status = el("select", "");
     status.name = "status";
     status.setAttribute("aria-label", "Filter logs by status");
@@ -118,28 +83,48 @@
       ["oldest", "Oldest first"],
       ["duration", "Longest duration"],
       ["input_size", "Largest input"],
-      ["output_size", "Largest output"],
+      ["output_size", "Largest output (webterm)"],
     ]) {
       const o = el("option", "", text);
       o.value = value;
       sort.append(o);
     }
-    filters.append(
-      search,
-      workspace,
-      task,
-      status,
-      sort,
-      btn("Apply", "secondary-button", reset),
-    );
     for (const field of [status, sort]) field.addEventListener("change", reset);
+    const pause = btn("", "icon-button tool-log-pause", () => {
+      paused = !paused;
+      paintPause();
+      if (!paused) {
+        offset = 0;
+        snapshot = null;
+        load();
+      }
+    });
+    pause.id = "tool-log-pause";
+    const paintPause = () => {
+      pause.innerHTML = paused
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>';
+      pause.title = paused ? "Resume live updates" : "Pause live updates";
+      pause.setAttribute("aria-label", pause.title);
+      pause.setAttribute("aria-pressed", String(paused));
+    };
+    paintPause();
+    const closeBtn = btn("×", "icon-button", close);
+    closeBtn.setAttribute("aria-label", "Close tool logs");
+    const actions = el("div", "tool-log-actions");
+    actions.append(status, sort, pause, closeBtn);
+    head.append(title, actions);
+    filters.append(search);
     let debounce;
     search.addEventListener("input", () => {
       clearTimeout(debounce);
-      debounce = setTimeout(reset, 300);
+      debounce = setTimeout(reset, 2000);
     });
     info = el("div", "tool-log-info", "Loading…");
     info.setAttribute("role", "status");
+    taskBar = el("div", "tool-log-tasks");
+    taskBar.id = "tool-log-tasks";
+    taskBar.setAttribute("aria-label", "Recent tasks: total time and calls");
     rows = el("div", "tool-log-rows");
     rows.id = "tool-log-rows";
     pager = el("footer", "tool-log-pager");
@@ -162,7 +147,7 @@
       "Keeps 2,000 calls. Large payloads are bounded; credentials and images are redacted.",
     );
     pager.append(note);
-    dialog.append(head, filters, info, rows, pager);
+    dialog.append(head, filters, info, taskBar, rows, pager);
     dialog.addEventListener("cancel", (e) => {
       e.preventDefault();
       close();
@@ -177,7 +162,10 @@
   }
   function open() {
     if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
+    if (!dialog.open) {
+      dialog.showModal();
+      filters.elements.q.focus();
+    }
     reset();
     clearInterval(timer);
     timer = setInterval(() => {
@@ -197,6 +185,8 @@
     if (!dialog.open) return;
     const seq = ++generation;
     const params = new URLSearchParams(new FormData(filters));
+    for (const field of dialog.querySelectorAll(".tool-log-actions select"))
+      params.set(field.name, field.value);
     params.set("offset", String(offset));
     if (snapshot !== null) params.set("snapshot", String(snapshot));
     try {
@@ -205,7 +195,8 @@
       });
       if (seq !== generation || !dialog.open) return;
       snapshot = body.snapshot;
-      info.textContent = `${body.total} matching calls · ${paused ? "Live paused" : offset ? "History page" : "Updates every 5 seconds"} · ${new Date().toLocaleTimeString()}`;
+      info.textContent = `${body.total} matching calls · ${paused ? "Live paused" : offset ? "History page" : "Live"} · ${new Date().toLocaleTimeString()}`;
+      renderTasks(body.tasks || []);
       render(body.entries);
       pager.firstElementChild.disabled = offset === 0;
       pager.children[2].disabled = offset + 100 >= body.total;
@@ -217,6 +208,25 @@
         info.textContent =
           error.message || "Logs could not be loaded. Retrying…";
     }
+  }
+  function renderTasks(tasks) {
+    taskBar.hidden = !tasks.length;
+    taskBar.replaceChildren(
+      ...tasks.map((task) => {
+        const chip = btn("", "tool-log-task-chip", () => {
+          filters.elements.q.value = task.name;
+          reset();
+        });
+        chip.dataset.active = String(Boolean(task.task_active));
+        chip.title = `Filter by ${task.name}${task.workspace ? ` · ${task.workspace}` : ""}`;
+        chip.append(
+          el("span", "task-chip-dot"),
+          el("strong", "task-chip-name", task.name),
+          el("span", "task-chip-stats", `${elapsed(task.task_total_ms)} · ${callCount(task.task_calls || 0)}`),
+        );
+        return chip;
+      }),
+    );
   }
   function render(entries) {
     const old = new Map(
@@ -245,7 +255,9 @@
         );
         const context = el("div", "log-context");
         context.append(
+          el("code", "log-subject"),
           el("strong", "log-task"),
+          el("span", "log-task-stats"),
           el("span", "log-summary"),
           el("code", "log-workspace"),
           el("span", "log-sizes"),
@@ -265,8 +277,21 @@
         entry.duration_ms === null
           ? "In progress"
           : `${entry.duration_ms.toLocaleString()} ms`;
+      const subject = card.querySelector(".log-subject");
+      subject.textContent = entry.subject || "";
+      subject.title = entry.subject || "";
+      subject.hidden = !entry.subject;
       card.querySelector(".log-task").textContent =
         entry.task || "Untracked call";
+      const stats = card.querySelector(".log-task-stats");
+      stats.hidden = entry.task_calls == null;
+      stats.dataset.active = String(Boolean(entry.task_active));
+      stats.textContent = entry.task_calls == null
+        ? ""
+        : `Task ${elapsed(entry.task_total_ms)} total · ${callCount(entry.task_calls)}${entry.task_running ? " · running" : entry.task_active ? " · active" : ""}`;
+      stats.title = entry.task_calls == null
+        ? ""
+        : `First call ${new Date(entry.task_first_ms).toLocaleString()} · latest ${new Date(entry.task_last_ms).toLocaleString()}`;
       card.querySelector(".log-summary").textContent = entry.summary;
       card.querySelector(".log-workspace").textContent = entry.workspace;
       card.querySelector(".log-sizes").textContent =
@@ -342,5 +367,5 @@
       panel.textContent = error.message || "Payload unavailable";
     }
   }
-  window.WebTermLog = { init, open, close, formatOutput };
+  window.WebTermLog = { init, open, close, formatOutput, elapsed };
 })();

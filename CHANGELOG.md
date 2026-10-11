@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.2.7 - 2026-10-11
+
+- The `webterm` MCP tool requires `workspace_id` (absolute folder or registered workspace name). It is the cwd and scope, so `cmd` and `text` only need relative paths; `webterm new NAME` no longer needs a path. `get_image` accepts workspace names too.
+- `/log`: one search box (also matches commands and paths) applied 2 s after typing, no Apply button; header text, `Open /log` and Sign out removed; pause/resume is an icon at the top right with the status and sort selects beside it. Sorting by largest output lists only `webterm` calls.
+- Sidebar: a workspace selector replaces the Navigation/Workspaces heading and shows the current workspace; the list shows the active workspace. The file search sits in the folder top bar (no Files/Every 5s text) and search results list the newest files first.
+- `workspace_roots` defaults to `["/"]`. The new-workspace picker opens at `$HOME`, can go up, has no name field, and selects the folder you open; the workspace is named after the folder.
+
+## 0.2.6 - 2026-10-10
+
+- `/log` shows the webterm `cmd` under each webterm call title and the file path under each `get_image` title.
+- MCP instructions and tool schemas ask for an honest quality score `n/100` (100 = perfect) instead of a progress number.
+- The server tracks each task's total running time (latest call minus first call) and call count; `/log` shows them on every call and in a recent-task bar that filters by task. A task idle for 5 minutes with no running call restarts as `NAME-2`, `NAME-3`, ...
+- `get_image` returns JPEG quality 90 at the original resolution by default; `jpeg: false` returns the original file.
+- Reloading the web app reopens the last workspace and terminal.
+- The sign-in form hides as soon as the password is accepted; a saved password shows a connecting status instead of the form, and the file-preview worker no longer delays opening terminals.
 
 ## 0.2.5 - 2026-10-10
 

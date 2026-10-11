@@ -30,7 +30,7 @@ def until(fn,timeout=12):
         time.sleep(.1)
     raise AssertionError(f'timed out after {timeout}s: {last!r}')
 def rpc(cmd,text=None):
-    args={'cmd':cmd,'workspace':str(auto),'task':'Autoboot lifecycle tests','summary':'50/100 Progress: verifying isolated autoboot lifecycle and cleanup'}
+    args={'cmd':cmd,'workspace_id':str(auto),'task':'Autoboot lifecycle tests','summary':'50/100 Progress: verifying isolated autoboot lifecycle and cleanup'}
     if text is not None:args['text']=text
     req=urllib.request.Request(base+'/mcp',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'webterm','arguments':args}}).encode(),headers={'Authorization':'Bearer '+token,'Accept':'application/json','Content-Type':'application/json'})
     with urllib.request.urlopen(req,timeout=15) as r:value=json.load(r)['result']

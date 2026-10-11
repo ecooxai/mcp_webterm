@@ -5,8 +5,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
 pub const MAX_CMD_BYTES: usize = 96 * 1024;
-pub const DESCRIPTION: &str = "Bash/terminal controls. Prefer cmd='webterm run', workspace='/absolute/project', text='code'; never repeat the path in cmd. Results default to first 200 + last 800 characters; if omitted/read_more appears, use webterm read ID --full, never rerun. run/python remain capped even with --full. Errors include stderr in text. write sends input once; read its ID for execution results. Create a descriptive task name at task start and reuse across calls/follow-up chats, not webterm/run. Summary: honest current progress or quality n/100 plus status, under 50 words; do not reset per call. text is literal; Bash pipelines work without text.";
-pub const INSTRUCTIONS: &str = "Use webterm(cmd='webterm run', workspace='/absolute/project', text='code'); do not repeat the path. Results: first 200 + last 800 chars, including stderr on errors. For omitted/read_more use webterm read ID --full, never rerun. Only explicit read expands output. write sends input; read its ID for results. Reuse a descriptive task name across calls/follow-up chats. Always supply task and summary for task work; summary has honest current progress or quality n/100 plus status, under 50 words. Do not reset per call. Bash pipes work without text; get_image returns native images.";
+pub const DESCRIPTION: &str = "Bash/terminal controls. workspace_id is required on every call (workspace folder or name); it is the cwd and scope, so cmd/text use relative paths only. Prefer cmd='webterm run', workspace_id='/project/app', text='pytest tests/'. Results default to first 200 + last 800 characters; if omitted/read_more appears, use webterm read ID --full, never rerun. run/python remain capped even with --full. Errors include stderr in text. write sends input once; read its ID for execution results. Create a descriptive task name at task start and reuse across calls/follow-up chats, not webterm/run. Summary: start with an honest quality score n/100 of the current work (100 = perfect), then concrete status, under 50 words; no progress numbers. The server tracks task time and call counts. text is literal; Bash pipelines work without text.";
+pub const INSTRUCTIONS: &str = "Always pass workspace_id (folder or workspace name); cmd/text use relative paths, e.g. webterm(cmd='webterm run', workspace_id='/project/app', text='ls src'). get_image path is relative too. Results: first 200 + last 800 chars, stderr on errors. For omitted/read_more use webterm read ID --full, never rerun. write sends input; read its ID for results. Reuse a descriptive task name across calls. Always supply task and summary: honest quality score n/100 (100 = perfect), then status, under 50 words, no progress numbers. Bash pipes work without text; get_image returns JPEG; avoid jpeg=false.";
 
 #[derive(Debug, Clone)]
 pub struct Parsed {
@@ -247,6 +247,13 @@ pub fn parse(src: &str) -> Result<Parsed> {
         let kind = positional.remove(0);
         result.args.insert("kind".into(), json!(kind));
     }
+    if result.op == "new" && positional.first().is_some_and(|p| !p.starts_with('/')) {
+        if positional.len() > 1 || result.args.contains_key("name") {
+            bail!("wrong arguments for new; use new [NAME] with the workspace_id parameter");
+        }
+        let name = positional.remove(0);
+        result.args.insert("name".into(), json!(name));
+    }
     let inferred = matches!(result.op.as_str(), "read" | "write" | "stop") && positional.len() == 1
         || result.op == "resize" && positional.len() == 3;
     if inferred {
@@ -255,9 +262,9 @@ pub fn parse(src: &str) -> Result<Parsed> {
     let expected = match result.op.as_str() {
         "help" | "ls" => 0..=1,
         "status" => 0..=0,
-        "new" => 1..=2,
+        "new" => 0..=2,
         "run" | "python" => 0..=1,
-        "ensure" => 1..=1,
+        "ensure" => 0..=1,
         "resize" => 4..=4,
         _ => 2..=2,
     };
@@ -413,30 +420,27 @@ pub fn from_argv(args: &[String]) -> String {
 
 pub fn help(topic: Option<&str>) -> Result<Value> {
     let rows = [
-        (
-            "new",
-            "new WORKSPACE [NAME] [--name NAME] [--cols 80] [--rows 24]",
-        ),
+        ("new", "new [NAME] [--name NAME] [--cols 80] [--rows 24]"),
         (
             "read",
-            "read [WORKSPACE] ID [--json] [--lines 100] [--max-chars 1000|--full] [--if-changed SNAPSHOT] [--wait 0..20] [--filter 'BASH']",
+            "read ID [--json] [--lines 100] [--max-chars 1000|--full] [--if-changed SNAPSHOT] [--wait 0..20] [--filter 'BASH']",
         ),
-        ("write", "write WORKSPACE ID [--enter] -- LITERAL_INPUT"),
+        ("write", "write ID [--enter] -- LITERAL_INPUT"),
         (
             "run",
-            "run [WORKSPACE] [--wait 20] [--max-chars 1000|--full] -- BASH_CODE",
+            "run [--wait 20] [--max-chars 1000|--full] -- BASH_CODE",
         ),
         (
             "python",
-            "python [WORKSPACE] [--wait 20] [--max-chars 1000|--full] -- PYTHON_CODE",
+            "python [--wait 20] [--max-chars 1000|--full] -- PYTHON_CODE",
         ),
         (
             "ls",
-            "ls [workspaces|terminals] [WORKSPACE] [--limit 50] [--offset 0] [--json]",
+            "ls [workspaces|terminals] [--limit 50] [--offset 0] [--json]",
         ),
-        ("ensure", "ensure WORKSPACE"),
-        ("resize", "resize WORKSPACE ID COLS ROWS"),
-        ("stop", "stop WORKSPACE ID"),
+        ("ensure", "ensure"),
+        ("resize", "resize ID COLS ROWS"),
+        ("stop", "stop ID"),
         ("status", "status"),
     ];
     let commands = rows
@@ -448,14 +452,14 @@ pub fn help(topic: Option<&str>) -> Result<Value> {
         bail!("unknown help topic; use help");
     }
     Ok(json!({"commands":commands,"notes":[
-        "MCP accepts optional text for one run, python or write header. Example: cmd=webterm run, workspace=/path, text=code. Do not repeat the workspace path in cmd; run/python require workspace metadata or a legacy positional path. Text is literal, not outer-shell-expanded; omit inline code and pipelines when text is supplied.",
-        "Optional leading webterm. WORKSPACE is an absolute folder path; quote paths with spaces. ID is the numeric terminal_id returned by new/run/ls; zero padding is accepted, and workspace ownership is checked.",
+        "MCP accepts optional text for one run, python or write header. Example: cmd=webterm run, workspace_id=/path, text=code. workspace_id is required; it sets cwd and scopes new/ls/read/write, so use relative paths in cmd/text and never repeat the workspace path. Text is literal, not outer-shell-expanded; omit inline code and pipelines when text is supplied.",
+        "Optional leading webterm. The workspace comes from the workspace_id parameter; legacy absolute WORKSPACE paths in cmd are still accepted but unnecessary. ID is the numeric terminal_id returned by new/run/ls; zero padding is accepted, and workspace ownership is checked.",
         "All terminal tools are consolidated here. get_image stays separate for native image content. Legacy tools remain callable but are not advertised.",
         "The MCP command is Bash. Quote scripts and write payloads after -- to prevent evaluation by the outer shell. CLI read prints retained text for pipes; --json requests structured metadata. webterm cmd accepts the old literal grammar as one quoted argument.",
         "run/python create one tracked command. When running=true, use read, never resubmit. Default output is first 200 plus last 800 characters. When omitted is present, use the read_more command (webterm read ID --full) for retained text. MCP run/python stay at 1000 characters even with --full; only explicit read expands output. Never rerun the command to read more. --full still respects 256 KiB retention.",
         "read returns a snapshot fingerprint. Reuse it with --if-changed to omit unchanged output; add --wait 20 to long-poll. This is a non-cryptographic change detector, not a resumable log cursor.",
         "--filter runs Bash once on the retained snapshot via stdin, not in the target PTY. It has shell permissions, a five-second limit, and cannot combine with --wait.",
-        "Choose a descriptive task name when work starts and reuse it for the same work, including follow-up chats. Include an honest current progress or quality n/100 and concrete status, not generic webterm or 0/100 Running run. Optional --task NAME --summary '35/100 Progress: parser fixed; tests running' adds attribution. Authentication and workspace root restrictions are unchanged."
+        "Choose a descriptive task name when work starts and reuse it for the same work, including follow-up chats. Start the summary with an honest quality score n/100 of the current work (100 = perfect) and concrete status, not a progress number or generic webterm. Optional --task NAME --summary '70/100 Parser fixed; tests running' adds attribution. The server computes each task's running time and call count; a task idle for 5 minutes restarts as NAME-2. Authentication and workspace root restrictions are unchanged."
     ]}))
 }
 
@@ -562,7 +566,7 @@ mod tests {
             "webterm",
             "nope",
             "read /tmp",
-            "new relative",
+            "new relative extra",
             "read /tmp 0",
             "read /tmp -1",
             "read /tmp 999999999999999999999999999",
@@ -730,6 +734,21 @@ mod text_parameter_tests {
 #[cfg(test)]
 mod workspace_parameter_tests {
     use super::*;
+    #[test]
+    fn new_takes_name_when_workspace_comes_from_parameter() {
+        let p = parse("webterm new build-tab").unwrap();
+        assert_eq!(p.args["name"], "build-tab");
+        assert!(!p.args.contains_key("workspace_id"));
+        assert!(
+            parse("new").unwrap().args.is_empty()
+                || !parse("new").unwrap().args.contains_key("name")
+        );
+        assert!(parse("new a b").is_err());
+        assert_eq!(
+            parse("new /tmp/x tab").unwrap().args["workspace_id"],
+            "/tmp/x"
+        );
+    }
     #[test]
     fn run_and_python_accept_workspace_from_context() {
         for command in [

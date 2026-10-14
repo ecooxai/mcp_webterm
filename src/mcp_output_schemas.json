@@ -1,4 +1,176 @@
 {
+  "webterm": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Captured output: first 200 + last 800 characters by default; stderr is included on errors. Follow read_more with webterm read ID --full to expand retained output."
+      },
+      "workspace_id": {
+        "type": "string"
+      },
+      "terminal_id": {
+        "type": "integer"
+      },
+      "running": {
+        "type": "boolean"
+      },
+      "exit_code": {
+        "type": "integer"
+      },
+      "snapshot": {
+        "type": "string"
+      },
+      "unchanged": {
+        "type": "boolean"
+      },
+      "chars": {
+        "type": "integer"
+      },
+      "omitted": {
+        "type": "integer"
+      },
+      "read_more": {
+        "type": "string"
+      },
+      "read_more_note": {
+        "type": "string"
+      },
+      "retention_limited": {
+        "type": "boolean"
+      },
+      "capture_limited": {
+        "type": "boolean"
+      },
+      "interrupted": {
+        "type": "boolean"
+      },
+      "filter_exit_code": {
+        "type": "integer"
+      },
+      "stderr_chars": {
+        "type": "integer"
+      },
+      "stderr_retention_limited": {
+        "type": "boolean"
+      },
+      "filter_input_limited": {
+        "type": "boolean"
+      },
+      "filter_stderr_truncated": {
+        "type": "boolean"
+      },
+      "filter_timed_out": {
+        "type": "boolean"
+      },
+      "filter_output_limit_hit": {
+        "type": "boolean"
+      },
+      "timed_out": {
+        "type": "boolean"
+      },
+      "output_limit_hit": {
+        "type": "boolean"
+      },
+      "stderr_truncated": {
+        "type": "boolean"
+      },
+      "source_terminal_id": {
+        "type": "integer"
+      },
+      "source_exit_code": {
+        "type": "integer"
+      },
+      "source_retention_limited": {
+        "type": "boolean"
+      },
+      "source_capture_limited": {
+        "type": "boolean"
+      },
+      "name": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "bytes_written": {
+        "type": "integer"
+      },
+      "enter": {
+        "type": "boolean"
+      },
+      "cols": {
+        "type": "integer"
+      },
+      "rows": {
+        "type": "integer"
+      },
+      "service": {
+        "type": "string"
+      },
+      "runtime_ready": {
+        "type": "boolean"
+      },
+      "workspace_count": {
+        "type": "integer"
+      },
+      "running_terminals": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      },
+      "next_offset": {
+        "type": "integer"
+      },
+      "workspaces": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "terminals": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "terminal_id": {
+              "type": "integer"
+            },
+            "workspace_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "commands": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "notes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
   "status": {
     "type": "object",
     "properties": {
@@ -835,7 +1007,6 @@
   },
   "get_image": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
       "workspace_id": {
         "type": "string",
@@ -884,10 +1055,7 @@
         "maximum": 16777216
       },
       "jpeg_quality": {
-        "type": [
-          "integer",
-          "null"
-        ],
+        "type": "integer",
         "minimum": 1,
         "maximum": 100
       }

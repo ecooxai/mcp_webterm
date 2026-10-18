@@ -236,7 +236,8 @@
     // Ignore stale lookups and never show an empty preview.
     if (id !== sequence) return;
     if (!result?.matches?.length) {
-      hide();
+      if (/^(?:\/|~\/)/.test(hit.path)) showExternalFile(session, hit, event, id);
+      else hide();
       return;
     }
     const matches = result.matches;
@@ -260,6 +261,36 @@
       if (index < EAGER_PREVIEWS) slot._load();
       else observer.observe(slot);
     });
+  }
+
+  // Absolute paths outside every workspace (e.g. /tmp/report.html) preview through a share link.
+  async function showExternalFile(session, hit, event, id) {
+    let link;
+    try {
+      link = await window.WebTermExplorer.shareUrl(null, hit.path);
+    } catch (_) {
+      link = null;
+    }
+    if (id !== sequence) return;
+    if (!link) {
+      hide();
+      return;
+    }
+    const { body } = open(session, hit, event, hit.path, "File outside workspaces");
+    float.classList.remove("is-url");
+    const bar = el("div", "link-preview-actions");
+    const tab = el("a", "text-button", "Open in new tab ↗");
+    tab.href = link;
+    tab.target = "_blank";
+    tab.rel = "noopener noreferrer";
+    bar.append(tab);
+    const frame = el("iframe", "link-preview-frame");
+    frame.title = `Preview of ${hit.path}`;
+    frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+    frame.referrerPolicy = "no-referrer";
+    frame.src = link;
+    frame.style.height = `${Math.max(160, Number(float.dataset.height) - 90)}px`;
+    body.append(bar, frame);
   }
 
   async function loadMatch(slot, match) {

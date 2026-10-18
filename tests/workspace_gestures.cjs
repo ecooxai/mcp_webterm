@@ -27,6 +27,7 @@ const activateStart = source.indexOf('  function activateWorkspace(');
 const activateEnd = source.indexOf('  function rememberTerminal(', activateStart);
 const pending = { state: { workspaces: [{id:'pending',terminals:[]}], expanded:new Set(), lastTerminalByWorkspace:{} }, renders:0 };
 pending.enterWorkspace = id => { pending.state.activeWorkspaceId = id; };
+pending.rememberRecentWorkspace = () => {};
 pending.selectTerminal = () => { throw new Error('unexpected terminal selection'); };
 pending.renderNavigation = () => pending.renders++;
 vm.createContext(pending);

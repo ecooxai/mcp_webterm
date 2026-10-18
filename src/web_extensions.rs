@@ -165,3 +165,31 @@ async fn preview_ports(State(state):State<AppState>,headers:HeaderMap)->Response
   }} Ok(ports.into_iter().collect())
  }).await {Ok(Ok(ports))=>Json(serde_json::json!({"ports":ports})).into_response(),_=>StatusCode::SERVICE_UNAVAILABLE.into_response()}
 }
+
+#[derive(serde::Deserialize)]
+struct FolderServersQuery { workspace_id: i64, #[serde(default)] path: String }
+
+// Listening processes whose working directory is the folder or below it.
+async fn folder_servers(State(state):State<AppState>,headers:HeaderMap,Query(q):Query<FolderServersQuery>)->Response {
+    if !bearer_authorized(&state,&headers) && current_session(&state,&headers).is_none() {return StatusCode::UNAUTHORIZED.into_response();}
+    let monitor=state.processes.clone();let config=(*state.config).clone();
+    let result=tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        let workspace=Database::open_config(&config)?.workspace_by_id(q.workspace_id)?;
+        let root=workspace.path.canonicalize()?;
+        let folder=root.join(&q.path).canonicalize()?;
+        if !folder.starts_with(&root) {anyhow::bail!("path escapes workspace");}
+        let sample=monitor.snapshot()?;let uid=unsafe{libc::geteuid()} as u64;let mut servers=Vec::new();
+        for row in sample["data"]["processes"].as_array().into_iter().flatten() {
+            let ports:Vec<u64>=row["ports"].as_array().into_iter().flatten().filter(|p|p["protocol"]=="tcp").filter_map(|p|p["port"].as_u64()).collect();
+            if ports.is_empty() || row["uid"].as_u64()!=Some(uid) {continue;}
+            let Some(pid)=row["pid"].as_u64().and_then(|p|u32::try_from(p).ok()) else {continue};
+            let Some(cwd)=crate::platform::process_cwd(pid) else {continue};
+            if !cwd.starts_with(&folder) {continue;}
+            let mut ports=ports;ports.sort_unstable();ports.dedup();
+            let command=String::from_utf8_lossy(&crate::platform::process_cmdline(pid)).replace('\0'," ").trim().to_string();
+            servers.push(serde_json::json!({"pid":pid,"name":row["name"],"command":command,"cwd":cwd,"ports":ports}));
+        }
+        Ok(serde_json::json!({"folder":folder,"servers":servers}))
+    }).await;
+    match result {Ok(Ok(v))=>Json(v).into_response(),Ok(Err(e))=>(StatusCode::BAD_REQUEST,Json(serde_json::json!({"error":e.to_string()}))).into_response(),Err(_)=>StatusCode::INTERNAL_SERVER_ERROR.into_response()}
+}

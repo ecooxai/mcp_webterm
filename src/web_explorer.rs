@@ -330,3 +330,101 @@ mod explorer_route_tests {
         }
     }
 }
+
+#[derive(serde::Deserialize)]
+struct ShareQuery {
+    #[serde(default)]
+    workspace_id: String,
+    path: String,
+}
+
+fn encode_segment(name: &str) -> String {
+    name.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+// Signed-in users mint a link to a file's folder; files outside workspaces must sit under workspace_roots.
+async fn explorer_share(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ShareQuery>,
+) -> Response {
+    if !explorer_authorized(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let config = state.config.clone();
+    let shared = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        use anyhow::Context as _;
+        let canonical = if q.workspace_id.is_empty() {
+            let path = PathBuf::from(&q.path).canonicalize().context("file not found")?;
+            if !config.workspace_roots.iter().any(|root| path.starts_with(root)) {
+                anyhow::bail!("path is outside the allowed roots");
+            }
+            path
+        } else {
+            crate::workspace_files::open(&config, &q.workspace_id, &q.path)?.1
+        };
+        if !canonical.is_file() {
+            anyhow::bail!("only files can be opened by link");
+        }
+        let folder = canonical.parent().context("file has no folder")?;
+        let token = crate::share::create(folder);
+        let name = canonical.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        Ok(serde_json::json!({
+            "url": format!("/share/{token}/{}", encode_segment(&name)),
+            "expires_in_s": crate::share::TTL.as_secs(),
+        }))
+    })
+    .await;
+    match shared {
+        Ok(Ok(value)) => no_store(Json(value).into_response()),
+        Ok(Err(error)) => api_error(error),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+// Public by design: the unguessable token is the credential. Scripts run in an opaque sandboxed origin,
+// so a shared page can never read WebTerm cookies or call its API.
+async fn share_file(Path((token, path)): Path<(String, String)>) -> Response {
+    let Some(folder) = crate::share::folder(&token) else {
+        return (StatusCode::NOT_FOUND, "Link expired or unknown").into_response();
+    };
+    let opened = tokio::task::spawn_blocking(move || -> anyhow::Result<(std::fs::File, PathBuf, u64)> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let canonical = folder.join(&path).canonicalize()?;
+        if !canonical.starts_with(&folder) {
+            anyhow::bail!("path escapes shared folder");
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&canonical)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            anyhow::bail!("not a file");
+        }
+        Ok((file, canonical, meta.len()))
+    })
+    .await;
+    let Ok(Ok((file, canonical, length))) = opened else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let stream = tokio_util::io::ReaderStream::with_capacity(tokio::fs::File::from_std(file), 64 * 1024);
+    let mut response = Body::from_stream(stream).into_response();
+    let (_, mime) = crate::workspace_files::kind(&canonical);
+    let h = response.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from_str(&length.to_string()).unwrap());
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert(
+        "content-security-policy",
+        HeaderValue::from_static("sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"),
+    );
+    response
+}

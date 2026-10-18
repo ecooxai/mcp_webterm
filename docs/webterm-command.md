@@ -100,7 +100,7 @@ The workspace parameter sets the working directory for run/python and ordinary B
 
 Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with honest current progress or quality `n/100`, give concrete current status, and contain fewer than 50 words. Do not reset progress to zero on each call or claim completion before testing.
 
-Modern Webterm MCP results contain terminal output in `structuredContent.text`, with `content: []` instead of a duplicate JSON text block. Error text and native image blocks are retained. Hidden legacy tools and the internal CLI/PTY protocol keep their existing keys. Clients must consume structuredContent; old clients that read only content will need updating. Log details also collapse duplicate payloads in historical entries without rewriting stored history.
+By default (v0.2.9) `/mcp` returns each result as one plain-text block: the command output, then one `key: value` line per field, with no `outputSchema`. With `/mcp?output_type=json`, terminal output is in `structuredContent.text`, with `content: []` instead of a duplicate JSON text block. Error text and native image blocks are retained. Hidden legacy tools and the internal CLI/PTY protocol keep their existing keys. JSON-mode clients must consume structuredContent. Log details also collapse duplicate payloads in historical entries without rewriting stored history.
 
 
 ### Short output and error diagnostics (v0.2.2)

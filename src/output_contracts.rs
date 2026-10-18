@@ -86,7 +86,7 @@ const LEADING_KEYS: [&str; 10] = [
     "status",
 ];
 
-/// Plain text for `?output_type=text`: `text` verbatim, then one `key: value` line per field.
+/// Plain text for the default `output_type=text`: `text` verbatim, then one `key: value` line per field.
 pub fn to_text(value: &Value) -> String {
     let Some(object) = value.as_object() else {
         return inline(value);

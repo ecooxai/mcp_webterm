@@ -74,8 +74,8 @@ async fn response_headers(request: Request<Body>, next: Next) -> Response {
     response
 }
 
-/// `?output_type=text` returns every result as one plain-text content block
-/// and advertises no outputSchema; the default `json` uses structuredContent.
+/// The default (`text`) returns every result as one plain-text content block and
+/// advertises no outputSchema; `?output_type=json` uses structuredContent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputType {
     Json,
@@ -84,7 +84,7 @@ pub enum OutputType {
 
 impl OutputType {
     fn from_query(query: Option<&str>) -> std::result::Result<Self, ()> {
-        let mut output = Self::Json;
+        let mut output = Self::Text;
         for pair in query.unwrap_or_default().split('&') {
             match pair.split_once('=') {
                 Some(("output_type", "text")) => output = Self::Text,
@@ -1844,7 +1844,7 @@ mod tests {
     fn request(body: Value) -> Request<Body> {
         Request::builder()
             .method(Method::POST)
-            .uri("/mcp")
+            .uri("/mcp?output_type=json")
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream")
@@ -2070,7 +2070,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_type_text_returns_plain_text_without_output_schema() {
+    async fn text_output_is_default_and_json_is_opt_in() {
         let temp = TempDir::new().unwrap();
         let app = router(test_config(&temp));
         let with_query = |uri: &str, body: Value| {
@@ -2078,18 +2078,23 @@ mod tests {
             *r.uri_mut() = uri.parse().unwrap();
             r
         };
+        let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+        for uri in ["/mcp", "/mcp?output_type=text"] {
+            let listed = json_body(app.clone().oneshot(with_query(uri, list.clone())).await.unwrap())
+                .await;
+            for tool in listed["result"]["tools"].as_array().unwrap() {
+                assert!(tool.get("outputSchema").is_none(), "{uri} {tool}");
+            }
+        }
         let listed = json_body(
             app.clone()
-                .oneshot(with_query(
-                    "/mcp?output_type=text",
-                    json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-                ))
+                .oneshot(with_query("/mcp?output_type=json", list))
                 .await
                 .unwrap(),
         )
         .await;
         for tool in listed["result"]["tools"].as_array().unwrap() {
-            assert!(tool.get("outputSchema").is_none(), "{tool}");
+            assert!(tool.get("outputSchema").is_some(), "{tool}");
         }
         // The webterm tool runs native commands through the real binary, which unit
         // tests lack; a legacy tool covers the HTTP path and execute_cmd the renderer.
@@ -2097,7 +2102,7 @@ mod tests {
             "arguments":{}}});
         let result = json_body(
             app.clone()
-                .oneshot(with_query("/mcp?output_type=text", call.clone()))
+                .oneshot(with_query("/mcp", call.clone()))
                 .await
                 .unwrap(),
         )
@@ -2107,7 +2112,12 @@ mod tests {
         assert!(result.get("structuredContent").is_none());
         assert_eq!(result["content"].as_array().unwrap().len(), 1);
         assert!(!result["content"][0]["text"].as_str().unwrap().contains('{'));
-        let json_result = json_body(app.clone().oneshot(with_query("/mcp", call)).await.unwrap())
+        let json_result = json_body(
+            app.clone()
+                .oneshot(with_query("/mcp?output_type=json", call))
+                .await
+                .unwrap(),
+        )
             .await["result"]
             .clone();
         assert!(

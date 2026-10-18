@@ -10,6 +10,7 @@ pub mod web;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod platform;
 pub mod port_proxy;
 pub mod processes;
 

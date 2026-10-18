@@ -7,7 +7,6 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs,
     io::Read,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
@@ -82,7 +81,9 @@ pub fn activity(
     let mut seen_ports = HashSet::new();
     for row in rows {
         let pid = row["pid"].as_u64().unwrap_or_default();
-        let cwd = fs::read_link(format!("/proc/{pid}/cwd")).ok();
+        let cwd = u32::try_from(pid)
+            .ok()
+            .and_then(crate::platform::process_cwd);
         let terminal = terminal_of.get(&pid).copied();
         let in_workspace = cwd.as_deref().and_then(owner) == Some(entry.id);
         if terminal.is_none() && !in_workspace {
@@ -151,7 +152,9 @@ pub fn activity(
 }
 
 fn cmdline(pid: u64) -> String {
-    let raw = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let raw = u32::try_from(pid)
+        .map(crate::platform::process_cmdline)
+        .unwrap_or_default();
     let mut text = raw
         .split(|b| *b == 0)
         .filter(|part| !part.is_empty())

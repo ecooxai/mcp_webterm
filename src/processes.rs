@@ -1,4 +1,4 @@
-//! Run the bounded, dependency-free Linux collector outside Tokio's executor.
+//! Run the bounded, dependency-free process collector outside Tokio's executor.
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -50,7 +50,7 @@ pub fn collect(mut request: Value) -> Result<Value> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .context("start process monitor; Python 3 and Linux /proc are required")?;
+        .context("start process monitor; Python 3 is required")?;
     let output = child.stdout.take().context("monitor stdout")?;
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();

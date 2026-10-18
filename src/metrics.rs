@@ -1,3 +1,6 @@
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
+
 use std::{
     fs::File,
     io::{Read, Take},
@@ -106,7 +109,80 @@ fn sample_system(previous_cpu: &mut Option<CpuTimes>) -> SystemMetrics {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn sample_system(previous_cpu: &mut Option<CpuTimes>) -> SystemMetrics {
+    let host = unsafe { libc::mach_host_self() };
+    let mut load: libc::host_cpu_load_info = unsafe { std::mem::zeroed() };
+    let mut count = libc::HOST_CPU_LOAD_INFO_COUNT;
+    let cpu_percent = (unsafe {
+        libc::host_statistics(
+            host,
+            libc::HOST_CPU_LOAD_INFO,
+            (&mut load as *mut libc::host_cpu_load_info).cast(),
+            &mut count,
+        )
+    } == libc::KERN_SUCCESS)
+        .then(|| {
+            let ticks = load.cpu_ticks.map(u64::from);
+            let current = CpuTimes {
+                idle: ticks[libc::CPU_STATE_IDLE as usize],
+                total: ticks.iter().sum(),
+            };
+            previous_cpu
+                .replace(current)
+                .and_then(|previous| cpu_delta_percent(previous, current))
+        })
+        .flatten();
+
+    let mut total: u64 = 0;
+    let mut size = std::mem::size_of::<u64>();
+    let total_ok = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&mut total as *mut u64).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0
+        && total > 0;
+    let mut vm: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+    let mut count = (std::mem::size_of::<libc::vm_statistics64>()
+        / std::mem::size_of::<libc::integer_t>())
+        as libc::mach_msg_type_number_t;
+    let vm_ok = unsafe {
+        libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            (&mut vm as *mut libc::vm_statistics64).cast(),
+            &mut count,
+        )
+    } == libc::KERN_SUCCESS;
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    let (memory_used_bytes, memory_total_bytes, memory_percent) = if total_ok && vm_ok {
+        let available = (u64::from(vm.free_count)
+            + u64::from(vm.inactive_count)
+            + u64::from(vm.speculative_count))
+            * page;
+        let used = total.saturating_sub(available.min(total));
+        (
+            Some(used),
+            Some(total),
+            Some(used as f64 * 100.0 / total as f64),
+        )
+    } else {
+        (None, total_ok.then_some(total), None)
+    };
+    SystemMetrics {
+        cpu_percent,
+        memory_used_bytes,
+        memory_total_bytes,
+        memory_percent,
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn sample_system(_previous_cpu: &mut Option<CpuTimes>) -> SystemMetrics {
     SystemMetrics::default()
 }

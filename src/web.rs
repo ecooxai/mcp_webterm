@@ -2070,7 +2070,7 @@ mod tests {
     #[tokio::test]
     async fn authenticated_folder_picker_returns_server_listing() {
         let temp = tempfile::TempDir::new().unwrap();
-        let allowed = temp.path().join("allowed");
+        let allowed = temp.path().canonicalize().unwrap().join("allowed");
         fs::create_dir(&allowed).unwrap();
         fs::create_dir(allowed.join("child")).unwrap();
         fs::write(allowed.join("hidden.txt"), "not a directory").unwrap();
@@ -2125,7 +2125,7 @@ mod tests {
     #[test]
     fn folder_listing_is_sorted_directory_only_and_confined() {
         let temp = tempfile::TempDir::new().unwrap();
-        let allowed = temp.path().join("allowed");
+        let allowed = temp.path().canonicalize().unwrap().join("allowed");
         let outside = temp.path().join("outside");
         fs::create_dir(&allowed).unwrap();
         fs::create_dir(&outside).unwrap();

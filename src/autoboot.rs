@@ -152,7 +152,6 @@ fn fingerprint(path: &Path) -> Result<Fingerprint> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(target_os = "linux")]
     options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     let mut file = options.open(path)?;
     let meta = file.metadata()?;

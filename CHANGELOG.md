@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10 - 2026-10-14
+
+- Native macOS support (Apple silicon and Intel). `webterm runtime` and `webterm serve` build and run on macOS: descriptor paths use `F_GETPATH`, process cwd/command line/session lookups use libproc and `sysctl` instead of `/proc`, the task manager collector uses `ps` and `lsof`, and dashboard CPU/memory come from Mach host statistics. Per-process disk I/O and GPU columns are null on macOS. Linux behaviour is unchanged.
+- Release assets add `webterm-macos-universal` (plus a `.tar.gz` bundle) alongside the Linux binary.
+
 ## 0.2.9 - 2026-10-14
 
 - Plain-text output is now the default: `/mcp` behaves like `/mcp?output_type=text` (no `outputSchema`, no `structuredContent`; the command output then one `key: value` line per field). Clients that want structured results connect to `/mcp?output_type=json`.

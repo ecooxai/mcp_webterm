@@ -589,6 +589,24 @@ Standard error is included in the returned `text`, not hidden in a separate fiel
 Piped controls retain no new terminal: when `source_terminal_id` is available, the read-more hint explicitly refers to the original unfiltered terminal. Controls without an ID do not invent one. Structured lists remain paginated metadata; the preview applies to textual output and error messages. Shortening does not change command exit status.
 
 
+## macOS
+
+WebTerm builds and runs natively on macOS 11+ (Apple silicon and Intel). Releases include `webterm-macos-universal`; or build it with `cargo build --release`. There is no systemd on macOS, so run the runtime and the HTTP service from two terminals (or launchd agents) with a config that keeps state in your home folder:
+
+    mkdir -p ~/.webterm
+    cat > ~/.webterm/webterm.toml <<EOF
+    listen = "127.0.0.1:7681"
+    database_path = "$HOME/.webterm/webterm.db"
+    runtime_socket = "$HOME/.webterm/runtime.sock"
+    tmux_socket = "$HOME/.webterm/tmux.sock"
+    workspace_roots = ["/"]
+    EOF
+    export WEBTERM_AUTH_TOKEN=$(openssl rand -hex 24)
+    webterm --config ~/.webterm/webterm.toml runtime &
+    webterm --config ~/.webterm/webterm.toml --passwd 'choose-a-password' serve
+
+A downloaded binary is quarantined by Gatekeeper; clear it with `xattr -d com.apple.quarantine webterm-macos-universal`. Bash and Python 3 (the Xcode command line tools) are required, as on Linux. The task manager reads processes with `ps` and `lsof`; macOS does not expose per-process disk I/O or GPU use, so those columns are empty.
+
 ## Autoboot scripts
 
 Webterm's HTTP frontend starts a background watcher after **10 seconds**. It creates

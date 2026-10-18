@@ -2080,8 +2080,13 @@ mod tests {
         };
         let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
         for uri in ["/mcp", "/mcp?output_type=text"] {
-            let listed = json_body(app.clone().oneshot(with_query(uri, list.clone())).await.unwrap())
-                .await;
+            let listed = json_body(
+                app.clone()
+                    .oneshot(with_query(uri, list.clone()))
+                    .await
+                    .unwrap(),
+            )
+            .await;
             for tool in listed["result"]["tools"].as_array().unwrap() {
                 assert!(tool.get("outputSchema").is_none(), "{uri} {tool}");
             }
@@ -2118,7 +2123,7 @@ mod tests {
                 .await
                 .unwrap(),
         )
-            .await["result"]
+        .await["result"]
             .clone();
         assert!(
             json_result["structuredContent"].is_object(),

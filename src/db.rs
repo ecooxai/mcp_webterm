@@ -677,8 +677,9 @@ mod tests {
     #[test]
     fn canonical_path_enforces_roots_and_resolves_symlinks() {
         let temp = TempDir::new().unwrap();
-        let allowed = temp.path().join("allowed");
-        let denied = temp.path().join("denied");
+        let base = temp.path().canonicalize().unwrap();
+        let allowed = base.join("allowed");
+        let denied = base.join("denied");
         fs::create_dir(&allowed).unwrap();
         fs::create_dir(&denied).unwrap();
         let config = Config {

@@ -1,6 +1,5 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-
 use std::{
     fs::File,
     io::{Read, Take},

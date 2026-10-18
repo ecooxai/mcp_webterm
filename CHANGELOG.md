@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.11 - 2026-10-14
+
+- Sidebar: on small screens it is a floating panel with no slide animation; the folder pane is 70% of the viewport; the three most recently opened workspaces are listed above the workspace selector.
+- Topbar: clicking the workspace path opens a menu with Copy path and the three recent workspaces.
+- Terminal tabs keep creation order (new terminals open at the right, `term11` no longer sorts before `term2`); double-click a tab for Duplicate / Rename / Remove.
+- Folder run menu: selecting a folder shows a run icon that lists servers already listening from that folder (`GET /api/v1/folder-servers`) and starts `npx vite`, `python3 -m http.server`, `node server.js`, `node server.mjs` or saved per-folder commands in a new terminal. Vite and `http.server` bind all IPv4/IPv6 interfaces; `POST /workspaces/{id}/terminals` accepts `cwd` and `command`.
+- HTML previews run JavaScript in a sandboxed opaque origin served from a login-free share link (`GET /api/v1/files/share` mints `/share/{token}/{file}`, valid 24 hours, kept in memory). "Open in new tab" uses that link, so it works over a public URL without the password.
+- Clicking an absolute path outside every workspace (for example `/tmp/report.html`) in a terminal previews it through a share link.
+- Mobile copy falls back to `execCommand("copy")` when the async clipboard API is unavailable.
+- `tests/mcp_load_test.py` drives N terminals over MCP and reports latency and CPU/RAM per phase.
+
 ## 0.2.10 - 2026-10-14
 
 - Native macOS support (Apple silicon and Intel). `webterm runtime` and `webterm serve` build and run on macOS: descriptor paths use `F_GETPATH`, process cwd/command line/session lookups use libproc and `sysctl` instead of `/proc`, the task manager collector uses `ps` and `lsof`, and dashboard CPU/memory come from Mach host statistics. Per-process disk I/O and GPU columns are null on macOS. Linux behaviour is unchanged.

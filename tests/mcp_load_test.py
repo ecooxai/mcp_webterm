@@ -101,7 +101,7 @@ def main():
         f'workspace_roots = ["/"]\nautoboot_enabled = false\n'
     )
     token = secrets.token_hex(24)
-    env = {**os.environ, "WEBTERM_AUTH_TOKEN": token}
+    env = {**os.environ, "WEBTERM_AUTH_TOKEN": token, "WEBTERM_PROXY_LISTEN": "127.0.0.1:0"}
     binary = str(Path(args.binary).resolve())
     logs = [open(root / "runtime.log", "w"), open(root / "serve.log", "w")]
     runtime = subprocess.Popen([binary, "--config", str(config), "runtime"], env=env, stdout=logs[0], stderr=subprocess.STDOUT, start_new_session=True)
@@ -157,14 +157,19 @@ def main():
         ids = [i for i in ids if i is not None]
         report["terminals_created"] = len(ids)
         print("created", len(ids), flush=True)
+        if not ids:
+            raise SystemExit("no terminals created; see serve.log/runtime.log in --root")
         sample("settled_after_create", runtime.pid, server.pid, 10, report)
 
         before = snapshot(runtime.pid, server.pid)
         batch("write_each", [f"write {tid} --enter -- echo ready-{tid}" for tid in ids])
-        reads = batch("read_each", [f"read {tid} --wait 5 --lines 5" for tid in ids])
+        reads = batch("read_each", [f"read {tid}" for tid in ids])
         report["phases"]["during_write_read"] = usage(before, snapshot(runtime.pid, server.pid))
         report["echo_verified"] = sum(1 for tid, item in zip(ids, reads) if item and f"ready-{tid}" in json.dumps(item))
         print("echo verified", report["echo_verified"], "of", len(ids), flush=True)
+        report["sample_read"] = reads[0] if reads else None
+        if not report["echo_verified"]:
+            print("sample read:", json.dumps(report["sample_read"])[:600], flush=True)
 
         sample("idle_all_terminals", runtime.pid, server.pid, args.idle_seconds, report)
 
@@ -186,13 +191,13 @@ def main():
         for proc in (server, runtime):
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except OSError:
                 pass
         time.sleep(2)
         for proc in (server, runtime):
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except OSError:
                 pass
         if args.report:
             Path(args.report).write_text(json.dumps(report, indent=2) + "\n")

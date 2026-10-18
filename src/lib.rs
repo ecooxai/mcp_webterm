@@ -3,6 +3,7 @@ pub mod db;
 pub mod mcp;
 pub mod metrics;
 pub mod runtime;
+pub mod share;
 pub mod terminal;
 pub mod tmux;
 pub mod tui;

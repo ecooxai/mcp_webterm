@@ -95,9 +95,10 @@
   line-height: 1.6;
 }
 .workspace-content {
-  height: 400px;
-  min-height: 400px;
-  max-height: 400px;
+  height: 70vh;
+  height: 70dvh;
+  min-height: 240px;
+  max-height: none;
   overflow: hidden;
   margin: 3px 5px 12px;
   border: 1px solid #202e41;
@@ -1428,3 +1429,11 @@
   white-space: nowrap;
 }
 .log-task-stats[data-active="true"] { color: #8ce3d1; }
+
+.file-tree-item { position: relative; }
+.file-run-button {
+  position: absolute; top: 2px; right: 6px; display: grid; width: 26px; height: 24px; place-items: center;
+  padding: 0; border: 1px solid #2f5d3a; border-radius: 6px; background: #12301c; color: #7fe0a0; cursor: pointer;
+}
+.file-run-button:hover, .file-run-button:focus-visible { background: #18452a; outline: none; }
+.file-run-button[hidden] { display: none; }

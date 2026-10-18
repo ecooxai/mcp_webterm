@@ -403,6 +403,7 @@
         row.addEventListener("click", () => {
           const entry = row._entry;
           if (entry.is_dir) {
+            m.runFolder = entry.path;
             if (m.open.has(entry.path)) m.open.delete(entry.path);
             else {
               m.open.add(entry.path);
@@ -446,7 +447,14 @@
         });
         const children = el("div", "file-tree-children");
         children.setAttribute("role", "group");
-        item.append(row, children);
+        const run = button("", "file-run-button", (event) => {
+          event.stopPropagation();
+          showRunMenu(m, row._entry, event);
+        });
+        run.innerHTML = RUN_ICON;
+        run.setAttribute("aria-label", "Run a server in this folder");
+        run.title = "Run in this folder";
+        item.append(row, run, children);
         return item;
       },
       (item, e) => {
@@ -487,6 +495,7 @@
           "aria-selected",
           String(selected?.key === `${m.ws.id}:${e.path}`),
         );
+        item.children[1].hidden = !(e.is_dir && m.runFolder === e.path);
         const expanded = e.is_dir && m.open.has(e.path) && depth < 32;
         item.lastElementChild.hidden = !expanded;
         if (e.is_dir) row.setAttribute("aria-expanded", String(expanded));
@@ -519,6 +528,72 @@
       more.disabled = cache.loading;
       parent.append(more);
     }
+  }
+  const RUN_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z"/></svg>';
+  // Servers listen on every IPv4/IPv6 interface; the WebTerm port proxy gives them an https URL.
+  const runCommands = () => [
+    { label: "npx vite", name: "vite", command: `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${location.hostname} npx vite --host :: --port 5173` },
+    { label: "python3 -m http.server", name: "http-server", command: "python3 -m http.server 8000 --bind ::" },
+    { label: "node server.js", name: "server.js", command: "node server.js" },
+    { label: "node server.mjs", name: "server.mjs", command: "node server.mjs" },
+  ];
+  function commandName(command) {
+    const words = command.trim().split(/\s+/).filter((word) => !word.includes("="));
+    const launcher = ["npx", "node", "python", "python3", "bun", "bunx", "deno", "pnpm", "yarn", "npm"];
+    let name = words[0] || "run";
+    if (launcher.includes(name) && words[1]) name = words[1] === "-m" && words[2] ? words[2] : words[1];
+    return name.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 32) || "run";
+  }
+  function savedCommands(key) {
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  async function showRunMenu(m, entry, event) {
+    const anchor = { clientX: event.clientX, clientY: event.clientY, preventDefault() {} };
+    const key = `webterm.folderCommands:${m.ws.id}:${entry.path}`;
+    const saved = savedCommands(key);
+    let servers = [];
+    try {
+      const { body } = await ctx.request(
+        `/folder-servers?${new URLSearchParams({ workspace_id: m.ws.id, path: entry.path })}`,
+        { method: "GET" },
+      );
+      servers = body?.servers || [];
+    } catch (_) {}
+    window.WebTermTools.showMenu(anchor, [
+      ...servers.flatMap((server) =>
+        server.ports.map((port) => ({
+          label: `● :${port}  ${server.command || server.name}`.slice(0, 80),
+          run: () => window.WebTermTools.openWebview(m.ws, port),
+        })),
+      ),
+      ...[...runCommands(), ...saved].map((item) => ({
+        label: `▶ ${item.label}`,
+        run: () => ctx.runCommand(m.ws.id, { name: item.name, cwd: entry.path, command: item.command }),
+      })),
+      {
+        label: "Add command…",
+        run: () => {
+          const command = window.prompt(`Command to run in ${entry.name}`)?.trim();
+          if (!command) return;
+          saved.push({ label: command, name: commandName(command), command });
+          localStorage.setItem(key, JSON.stringify(saved));
+          ctx.toast(`Saved “${command}” for ${entry.name}.`);
+        },
+      },
+    ]);
+  }
+  // Absolute, login-free link (valid 24h) for opening a file in a new tab, including over a public URL.
+  async function shareUrl(ws, path) {
+    const { body } = await ctx.request(
+      `/files/share?${new URLSearchParams({ workspace_id: ws?.id || "", path })}`,
+      { method: "GET" },
+    );
+    return new URL(body.url, location.origin).href;
   }
   async function metadata(ws, entry) {
     const { body } = await ctx.request(
@@ -717,16 +792,28 @@
       });
       body.append(media, facts.node);
     } else if (info.kind === "html") {
+      // Scripts run from an unguessable share link in an opaque sandboxed origin, isolated from WebTerm.
       const iframe = el("iframe", "file-html-preview");
       iframe.title = `HTML preview: ${info.name}`;
-      iframe.setAttribute("sandbox", "allow-same-origin");
+      iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
       iframe.referrerPolicy = "no-referrer";
       iframe.loading = "lazy";
-      iframe.src = url;
-      body.append(
-        iframe,
-        el("p", "preview-safety", "HTML preview · scripts and forms disabled"),
-      );
+      const note = el("p", "preview-safety", "HTML preview · JavaScript enabled (sandboxed)");
+      body.append(iframe, note);
+      shareUrl(ws, info.path)
+        .then((link) => {
+          iframe.src = link;
+          const tab = el("a", "text-button", "Open in new tab ↗");
+          tab.href = link;
+          tab.target = "_blank";
+          tab.rel = "noopener noreferrer";
+          note.append(" · ", tab);
+        })
+        .catch(() => {
+          iframe.setAttribute("sandbox", "allow-same-origin");
+          iframe.src = url;
+          note.textContent = "HTML preview · scripts disabled (share link unavailable)";
+        });
     } else if (info.kind === "model") {
       const model = el("model-viewer", "file-model-preview");
       model.setAttribute("src", url);
@@ -871,5 +958,6 @@
     isViewerActive: () => viewerActive,
     basename,
     previewElement,
+    shareUrl,
   };
 })();

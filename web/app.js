@@ -56,7 +56,7 @@
   function init() {
     const ids = [
       "login-view", "login-form", "password", "password-toggle", "login-error", "login-submit", "login-status",
-      "app-view", "drawer-open", "drawer-scrim", "sidebar", "active-workspace", "active-terminal", "active-backend",
+      "app-view", "drawer-open", "drawer-scrim", "sidebar", "workspace-recent", "active-workspace", "active-terminal", "active-backend",
       "connection-chip", "connection-label", "logout-button", "workspace-create", "workspace-list",
       "workspace-switch", "workspace-switch-name", "workspace-menu",
       "nav-empty", "refresh-button", "refresh-status", "terminal-panel", "terminal-empty",
@@ -70,7 +70,7 @@
     elements.loginForm.addEventListener("submit", login);
     elements.passwordToggle.addEventListener("click", togglePassword);
     elements.logoutButton.addEventListener("click", () => window.WebTermLog.open());
-    window.WebTermExplorer.init({state,elements,request:apiFetch,renderNavigation,layout:() => requestAnimationFrame(fitActiveTerminal),toast:showToast});
+    window.WebTermExplorer.init({state,elements,request:apiFetch,runCommand:runFolderCommand,renderNavigation,layout:() => requestAnimationFrame(fitActiveTerminal),toast:showToast});
     window.WebTermLinks.init({elements,request:apiFetch});
     window.WebTermTools.init({elements,request:apiFetch,closeDrawer:closeMobileDrawer,restore:restoreTerminalView});
     elements.workspaceList.addEventListener("contextmenu", handleWorkspaceMenu);
@@ -95,6 +95,18 @@
     });
     elements.workspaceMenu.addEventListener("keydown", (event) => {
       if (event.key === "Escape") { toggleWorkspaceMenu(false); elements.workspaceSwitch.focus(); }
+    });
+    elements.workspaceRecent.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-workspace-id]");
+      if (item) activateWorkspace(item.dataset.workspaceId);
+    });
+    elements.activeWorkspace.addEventListener("click", showWorkspacePathMenu);
+    elements.activeWorkspace.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") showWorkspacePathMenu(event);
+    });
+    elements.terminalTabs.addEventListener("dblclick", (event) => {
+      const tab = event.target.closest("[data-terminal-id]");
+      if (tab) showTerminalTabMenu(event, tab);
     });
     elements.workspaceList.addEventListener("click", handleNavigationClick);
     elements.workspaceList.addEventListener("dblclick", handleNavigationDoubleClick);
@@ -593,6 +605,111 @@
     if (open) elements.workspaceMenu.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
   }
 
+  function loadRecentWorkspaces() {
+    try {
+      const ids = JSON.parse(localStorage.getItem("webterm.recentWorkspaces") || "[]");
+      return Array.isArray(ids) ? ids.map(String) : [];
+    } catch { return []; }
+  }
+
+  function rememberRecentWorkspace(id) {
+    const ids = [String(id), ...loadRecentWorkspaces().filter((item) => item !== String(id))].slice(0, 10);
+    try { localStorage.setItem("webterm.recentWorkspaces", JSON.stringify(ids)); } catch {}
+  }
+
+  // Most recently opened first; workspaces never opened here fall back to newest-created.
+  function recentWorkspaces(limit = 3) {
+    const byId = new Map(state.workspaces.map((workspace) => [workspace.id, workspace]));
+    const seen = loadRecentWorkspaces().filter((id) => byId.has(id));
+    const rest = state.workspaces.filter((workspace) => !seen.includes(workspace.id))
+      .sort((left, right) => Number(right.id) - Number(left.id))
+      .map((workspace) => workspace.id);
+    return [...seen, ...rest].slice(0, limit).map((id) => byId.get(id));
+  }
+
+  function renderRecentWorkspaces(active) {
+    const recent = recentWorkspaces();
+    elements.workspaceRecent.hidden = recent.length === 0;
+    elements.workspaceRecent.replaceChildren(...recent.map((workspace) => {
+      const item = make("button", "workspace-recent-item");
+      item.type = "button";
+      item.dataset.workspaceId = workspace.id;
+      item.setAttribute("role", "listitem");
+      item.classList.toggle("is-active", workspace.id === active?.id);
+      item.title = workspace.path;
+      item.append(
+        make("span", "workspace-recent-name", window.WebTermExplorer.basename(workspace.path || workspace.name)),
+        make("code", "workspace-recent-path", workspace.path),
+      );
+      return item;
+    }));
+  }
+
+  async function copyText(text, done) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(done);
+    } catch (_) {
+      // Plain-http public URLs have no async clipboard; fall back to a hidden textarea.
+      const area = make("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.cssText = "position:fixed;top:0;left:0;opacity:0;";
+      document.body.append(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      showToast(ok ? done : "Clipboard access was denied.");
+    }
+  }
+
+  function menuAnchor(event, target) {
+    if (event.clientX || event.clientY) return event;
+    const rect = target.getBoundingClientRect();
+    return { clientX: rect.left, clientY: rect.bottom + 4, preventDefault: () => event.preventDefault?.() };
+  }
+
+  function showWorkspacePathMenu(event) {
+    const terminal = state.terminals.get(state.activeId);
+    const current = terminal?.workspace || state.workspaces.find((item) => item.id === state.activeWorkspaceId);
+    if (!current && !state.workspaces.length) return;
+    const recent = recentWorkspaces(4).filter((workspace) => workspace.id !== current?.id).slice(0, 3);
+    window.WebTermTools.showMenu(menuAnchor(event, elements.activeWorkspace), [
+      { label: "Copy path", hidden: !current, run: () => copyText(current.path, "Workspace path copied.") },
+      ...recent.map((workspace) => ({
+        label: `Switch to ${window.WebTermExplorer.basename(workspace.path || workspace.name)}`,
+        run: () => activateWorkspace(workspace.id),
+      })),
+    ]);
+  }
+
+  function showTerminalTabMenu(event, tab) {
+    const id = tab.dataset.terminalId;
+    const terminal = state.terminals.get(id);
+    if (!terminal) return;
+    window.WebTermTools.showMenu(event, [
+      { label: "Duplicate terminal", hidden: !can("terminal", "create"), run: () => duplicateTerminal(terminal) },
+      { label: "Rename terminal…", hidden: !can("terminal", "rename"), run: () => openDialog("terminal-rename", id, tab) },
+      { label: "Remove terminal…", danger: true, hidden: !can("terminal", "delete"), run: () => openDialog("terminal-delete", id, tab) },
+    ]);
+  }
+
+  // A duplicate is a new shell in the same workspace, named after the source terminal.
+  async function duplicateTerminal(terminal) {
+    try {
+      const { body } = await apiFetch(`/workspaces/${encodeURIComponent(terminal.workspaceId)}/terminals`, {
+        method: "POST",
+        json: { name: `${terminal.name}-copy` },
+      });
+      await refreshWorkspaces(false);
+      const created = body?.terminal;
+      if (created?.id !== undefined) selectTerminal(String(created.id));
+      showToast(`Duplicated ${terminal.name} as ${created?.name || "a new terminal"}.`);
+    } catch (error) {
+      if (error.status !== 401) showToast(friendlyError(error, "Unable to duplicate the terminal."));
+    }
+  }
+
   function renderWorkspaceSwitcher(active) {
     const label = active ? window.WebTermExplorer.basename(active.path || active.name) : "No workspace";
     elements.workspaceSwitchName.textContent = label;
@@ -620,6 +737,7 @@
     if (active && active.id !== state.shownWorkspaceId) state.expanded.add(active.id);
     state.shownWorkspaceId = active?.id || null;
     renderWorkspaceSwitcher(active);
+    renderRecentWorkspaces(active);
     patchKeyedList(
       elements.workspaceList,
       active ? [active] : [],
@@ -699,13 +817,12 @@
     }
   }
 
+  // Creation order (ids only grow): new terminals land rightmost; names never reorder tabs.
   function orderedTerminals(terminals) {
+    const rank = (terminal) => Number(terminal.id);
     return terminals
       .map((terminal, index) => ({ terminal, index }))
-      .sort((left, right) => {
-        const statusOrder = Number(left.terminal.status !== "running") - Number(right.terminal.status !== "running");
-        return statusOrder || left.index - right.index;
-      })
+      .sort((left, right) => (rank(left.terminal) - rank(right.terminal)) || left.index - right.index)
       .map((item) => item.terminal);
   }
 
@@ -897,6 +1014,7 @@
   function activateWorkspace(id) {
     const workspace = state.workspaces.find((item) => item.id === String(id));
     if (!workspace) return;
+    rememberRecentWorkspace(workspace.id);
     state.expanded.add(workspace.id);
     state.activeWorkspaceId = workspace.id;
     const lastId = state.lastTerminalByWorkspace[workspace.id];
@@ -916,6 +1034,7 @@
   function enterWorkspace(id, retry) {
     const workspace = state.workspaces.find((item) => item.id === String(id));
     if (!workspace) return;
+    rememberRecentWorkspace(workspace.id);
     state.activeWorkspaceId = workspace.id;
     saveActiveView(workspace.id, null);
     const running = workspace.terminals.find((terminal) => terminal.status === "running");
@@ -950,6 +1069,29 @@
       }
     } finally {
       state.ensureInFlight.delete(id);
+    }
+  }
+
+  // Starts a command in a new terminal named after it; taken names get a numeric suffix.
+  async function runFolderCommand(workspaceId, { name, cwd, command }) {
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      try {
+        const { body } = await apiFetch(`/workspaces/${encodeURIComponent(workspaceId)}/terminals`, {
+          method: "POST",
+          json: { name: attempt === 1 ? name : `${name}-${attempt}`, cwd, command },
+        });
+        await refreshWorkspaces(false);
+        if (body?.terminal?.id !== undefined) selectTerminal(String(body.terminal.id));
+        showToast(`Started ${body?.terminal?.name || name}.`);
+        return;
+      } catch (error) {
+        if (error.status === 401) return;
+        const taken = /UNIQUE|already|create terminal/i.test(String(error.message || ""));
+        if (attempt === 5 || !taken) {
+          showToast(friendlyError(error, "Unable to start the command."));
+          return;
+        }
+      }
     }
   }
 
@@ -1666,12 +1808,7 @@
   async function copySelection(session) {
     const selected = session.term.getSelection();
     if (!selected) return;
-    try {
-      await navigator.clipboard.writeText(selected);
-      showToast("Selection copied.");
-    } catch (_) {
-      showToast("Clipboard access was denied.");
-    }
+    await copyText(selected, "Selection copied.");
   }
 
   async function pasteClipboard(session = state.sessions.get(state.activeId)) {

@@ -121,6 +121,8 @@ fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration
         .route("/api/v1/files/list", get(explorer_list))
         .route("/api/v1/files/preview", get(explorer_preview))
         .route("/api/v1/files/resolve", get(explorer_resolve))
+        .route("/api/v1/files/share", get(explorer_share))
+        .route("/share/{token}/{*path}", get(share_file))
         .route("/api/v1/workspace-activity", get(workspace_activity))
         .route("/api/v1/git/status", get(workspace_git_status))
         .route("/api/v1/git/diff", get(workspace_git_diff))
@@ -174,6 +176,7 @@ fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration
         .route("/api/v1/terminals/{id}/ws", get(terminal_websocket))
         .route("/api/v1/status", get(bearer_status))
         .route("/api/v1/preview-ports", get(preview_ports))
+        .route("/api/v1/folder-servers", get(folder_servers))
         .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state.clone())
         .merge(mcp_router)
@@ -760,6 +763,12 @@ async fn delete_workspace(
 #[derive(Default, Deserialize)]
 struct CreateTerminalRequest {
     name: Option<String>,
+    /// Folder inside the workspace to start in; defaults to the workspace root.
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    /// Command typed into the new shell once it starts.
+    #[serde(default)]
+    command: Option<String>,
     #[serde(default = "default_columns")]
     cols: u16,
     #[serde(default = "default_rows")]
@@ -927,8 +936,20 @@ async fn create_terminal(
                 Some(name) => database.reserve_terminal(workspace.id, name)?,
                 None => database.reserve_default_terminal(workspace.id)?,
             };
+            let start = match request.cwd.as_deref() {
+                Some(folder) => {
+                    let root = workspace.path.canonicalize()?;
+                    let folder = root.join(folder).canonicalize()?;
+                    if !folder.starts_with(&root) || !folder.is_dir() {
+                        database.delete_terminal(terminal.id)?;
+                        anyhow::bail!("cwd must be a folder inside the workspace");
+                    }
+                    folder
+                }
+                None => workspace.path.clone(),
+            };
             let terminals = TerminalManager::new(&config)?;
-            if let Err(error) = terminals.create(&terminal.tmux_session, &workspace.path) {
+            if let Err(error) = terminals.create(&terminal.tmux_session, &start) {
                 database.delete_terminal(terminal.id)?;
                 return Err(error);
             }
@@ -937,6 +958,9 @@ async fn create_terminal(
                 terminals.stop(&terminal.tmux_session)?;
                 database.delete_terminal(terminal.id)?;
                 return Err(error);
+            }
+            if let Some(command) = request.command.as_deref().filter(|c| !c.trim().is_empty()) {
+                terminals.write(&terminal.tmux_session, command, true)?;
             }
             let terminal = database.set_terminal_status(terminal.id, "running")?;
             Ok(TerminalResponse {

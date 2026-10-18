@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='metadata-ui-',dir='/build') as name:
     env={k:v for k,v in os.environ.items() if not k.startswith('WEBTERM_')};env.update(WEBTERM_PASSWORD=password,WEBTERM_PROXY_LISTEN=f'127.0.0.1:{freeport()}',WEBTERM_FORWARD_PROXY_TOKEN_FILE=str(root/'token'))
     processes=[];handles=[]
     def rpc(cmd,**extra):
-        req=urllib.request.Request(base+'/mcp',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'webterm','arguments':{'cmd':cmd,**extra}}}).encode(),headers={'Authorization':'Bearer '+token,'Accept':'application/json','Content-Type':'application/json'})
+        req=urllib.request.Request(base+'/mcp?output_type=json',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'webterm','arguments':{'cmd':cmd,**extra}}}).encode(),headers={'Authorization':'Bearer '+token,'Accept':'application/json','Content-Type':'application/json'})
         v=json.load(urllib.request.urlopen(req,timeout=30))['result']
         if v.get('isError'):raise AssertionError(v)
         return v['structuredContent']

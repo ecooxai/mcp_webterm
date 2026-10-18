@@ -19,11 +19,12 @@ StateDirectory=webterm
 StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
+# No PrivateTmp: get_image and the file browser must see the same /tmp as
+# terminal commands, which run in webterm-runtime.service.
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/webterm /home/admin/project
+ReadWritePaths=/var/lib/webterm /home/admin/project /tmp /var/tmp
 ProtectClock=true
 ProtectControlGroups=true
 ProtectHostname=true

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.9 - 2026-10-14
+
+- Plain-text output is now the default: `/mcp` behaves like `/mcp?output_type=text` (no `outputSchema`, no `structuredContent`; the command output then one `key: value` line per field). Clients that want structured results connect to `/mcp?output_type=json`.
+
+## 0.2.8 - 2026-10-14
+
+- The `webterm` and `get_image` `outputSchema` now declare every field the tools return (`text`, `exit_code`, `running`, `terminal_id`, `workspace_id`, `snapshot`, `chars`, ...). Results are made to match the schema before sending: null fields are dropped and any undeclared field is appended to `text`, so strict MCP clients (e.g. Gemini) no longer reduce results to `{}`. `webterm status` reports `workspace_count` instead of a numeric `workspaces`.
+- `/mcp?output_type=text` returns every result as one plain-text content block, with no `outputSchema` or `structuredContent`: the command output first, then one `key: value` line per field (`exit_code: 0`, `terminal_id: 7`, ...). `get_image` keeps its image block and adds the metadata as text. `output_type=json` (default) keeps structured results.
+- `deploy/webterm.service` no longer uses `PrivateTmp`, so `get_image` sees the same `/tmp` as terminal commands.
+
 ## 0.2.7 - 2026-10-11
 
 - The `webterm` MCP tool requires `workspace_id` (absolute folder or registered workspace name). It is the cwd and scope, so `cmd` and `text` only need relative paths; `webterm new NAME` no longer needs a path. `get_image` accepts workspace names too.

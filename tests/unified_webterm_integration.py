@@ -68,7 +68,7 @@ def rpc(method, params=None, auth=True, extra=None):
         headers['Authorization'] = 'Bearer ' + token
     if extra:
         headers.update(extra)
-    request = urllib.request.Request(base+'/mcp', data=json.dumps(payload,ensure_ascii=False).encode(),headers=headers)
+    request = urllib.request.Request(base+'/mcp?output_type=json', data=json.dumps(payload,ensure_ascii=False).encode(),headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 

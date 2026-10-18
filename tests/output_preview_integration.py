@@ -6,7 +6,7 @@ import time
 def exercise(rpc, check, workspace):
     terminals=[]
     def call(cmd,text=None,error=False):
-        args={'cmd':cmd,'workspace':str(workspace),'task':'Output preview verification','summary':'92/100 Progress: verifying bounded output and stderr preservation'}
+        args={'cmd':cmd,'workspace_id':str(workspace),'task':'Output preview verification','summary':'92/100 Progress: verifying bounded output and stderr preservation'}
         if text is not None:args['text']=text
         result=rpc('tools/call',{'name':'webterm','arguments':args})['result']
         if error:

@@ -46,7 +46,7 @@ impl Default for Config {
             database_path: state_dir.join("webterm.db"),
             runtime_socket: state_dir.join("runtime.sock"),
             tmux_socket: state_dir.join("tmux.sock"),
-            workspace_roots: Vec::new(),
+            workspace_roots: vec![PathBuf::from("/")],
             autoboot_enabled: true,
             autoboot_dir: None,
             autoboot_delay_seconds: 10,

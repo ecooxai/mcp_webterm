@@ -86,7 +86,7 @@ Run `cargo test --locked`, `cargo build --locked --all-targets`, and `python3 te
 `task` is a simple single-line name (1–80 characters). Supply `task` and `summary` together. `summary` starts with `0/100` through `100/100`, followed by a description of this call and its current progress. It must have fewer than 50 words in total, no control characters, and at most 2,048 characters.
 
 ```json
-{"cmd":"webterm read 12 | grep error","workspace":"/home/dev/project/app","task":"Build checks","summary":"65/100 Reading test output; build completed, checking remaining errors"}
+{"cmd":"webterm read 12 | grep error","workspace_id":"/home/dev/project/app","task":"Build checks","summary":"65/100 Reading test output; build completed, checking remaining errors"}
 ```
 
 For write, use `cmd: "webterm write 12 --enter"` and put literal terminal input in `text`. Explicit attribution wins over legacy inline `--task`/`--summary`; metadata is never evaluated as shell source. Concurrent calls carry independent child-process contexts. Both native WebTerm and the Colab gateway log the fields. Calls without the new fields remain compatible.
@@ -95,7 +95,7 @@ Workspace sidebar: single click or Enter/Space folds/unfolds only. Rapid double-
 
 ## Workspace-only commands and task continuity
 
-Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"40/100 Progress: parser fixed; verifying the build"})`.
+Use `webterm({"cmd":"webterm run","workspace_id":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"40/100 Progress: parser fixed; verifying the build"})`.
 The workspace parameter sets the working directory for run/python and ordinary Bash, and scopes reads/writes. Do not repeat the path in cmd. Legacy positional paths still work; a conflicting path is rejected before execution.
 
 Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with honest current progress or quality `n/100`, give concrete current status, and contain fewer than 50 words. Do not reset progress to zero on each call or claim completion before testing.

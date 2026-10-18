@@ -109,7 +109,7 @@ unreadable, or out-of-root paths return a descriptive `400` response.
 
 Every mutation requires the session cookie, a matching `Origin`, and `X-CSRF-Token` from the session response.
 
-- `POST /api/v1/workspaces` with `{"name":"…","path":"/allowed/folder"}` returns `201 {"workspace":…}`.
+- `POST /api/v1/workspaces` with `{"path":"/allowed/folder"}` (optional `"name"`) returns `201 {"workspace":…}`. Without a name the folder is registered idempotently under a name derived from its basename.
 - `PATCH /api/v1/workspaces/:id` with `{"name":"…"}` and/or `{"path":"…"}` returns the workspace wrapper.
 - `DELETE /api/v1/workspaces/:id` returns 204. If terminal records exist it requires `?force=true`, which stops them before removing records. Folders are never removed.
 - `POST /api/v1/workspaces/:id/terminals` with `{}` atomically chooses the first available positive integer name in that workspace. An explicit `{"name":"…","cols":80,"rows":24}` is also accepted. Dimensions default to 80×24.

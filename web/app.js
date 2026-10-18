@@ -29,6 +29,7 @@
     sessions: new Map(),
     activeId: null,
     activeWorkspaceId: null,
+    shownWorkspaceId: null,
     ensureInFlight: new Set(),
     ensureAttempted: new Set(),
     ctrlPending: false,
@@ -57,6 +58,7 @@
       "login-view", "login-form", "password", "password-toggle", "login-error", "login-submit", "login-status",
       "app-view", "drawer-open", "drawer-scrim", "sidebar", "active-workspace", "active-terminal", "active-backend",
       "connection-chip", "connection-label", "logout-button", "workspace-create", "workspace-list",
+      "workspace-switch", "workspace-switch-name", "workspace-menu",
       "nav-empty", "refresh-button", "refresh-status", "terminal-panel", "terminal-empty",
       "empty-open-drawer", "terminal-tabs", "terminal-add-tab", "terminal-mount", "new-output-button", "terminal-announcer", "accessory-bar",
       "status-bar", "system-metrics", "cpu-metric", "memory-metric", "metrics-freshness",
@@ -81,6 +83,19 @@
     elements.emptyOpenDrawer.addEventListener("click", openNavigation);
     elements.refreshButton.addEventListener("click", () => refreshWorkspaces(true));
     elements.workspaceCreate.addEventListener("click", (event) => openDialog("workspace-create", null, event.currentTarget));
+    elements.workspaceSwitch.addEventListener("click", () => toggleWorkspaceMenu());
+    elements.workspaceMenu.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-workspace-id]");
+      if (!item) return;
+      toggleWorkspaceMenu(false);
+      activateWorkspace(item.dataset.workspaceId);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!elements.workspaceMenu.hidden && !event.target.closest(".workspace-switcher")) toggleWorkspaceMenu(false);
+    });
+    elements.workspaceMenu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { toggleWorkspaceMenu(false); elements.workspaceSwitch.focus(); }
+    });
     elements.workspaceList.addEventListener("click", handleNavigationClick);
     elements.workspaceList.addEventListener("dblclick", handleNavigationDoubleClick);
     elements.terminalTabs.addEventListener("click", (event) => {
@@ -572,10 +587,42 @@
     return `${terminal.name}, ${terminal.status}${backend}${unread ? ", new output" : ""}`;
   }
 
+  function toggleWorkspaceMenu(open = elements.workspaceMenu.hidden) {
+    elements.workspaceMenu.hidden = !open;
+    elements.workspaceSwitch.setAttribute("aria-expanded", String(open));
+    if (open) elements.workspaceMenu.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+  }
+
+  function renderWorkspaceSwitcher(active) {
+    const label = active ? window.WebTermExplorer.basename(active.path || active.name) : "No workspace";
+    elements.workspaceSwitchName.textContent = label;
+    elements.workspaceSwitch.title = active ? `${active.path} · switch workspace` : "Switch workspace";
+    elements.workspaceSwitch.disabled = state.workspaces.length === 0;
+    elements.workspaceMenu.replaceChildren(...state.workspaces.map((workspace) => {
+      const item = make("button", "workspace-menu-item");
+      item.type = "button";
+      item.dataset.workspaceId = workspace.id;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(workspace.id === active?.id));
+      item.title = workspace.path;
+      item.append(
+        make("span", "workspace-menu-name", window.WebTermExplorer.basename(workspace.path || workspace.name)),
+        make("code", "workspace-menu-path", workspace.path),
+        make("span", "workspace-menu-count", String(workspace.terminals.length)),
+      );
+      return item;
+    }));
+  }
+
   function renderNavigation() {
+    const active = state.workspaces.find((item) => item.id === state.activeWorkspaceId) || state.workspaces[0];
+    // Expand a workspace when it becomes the shown one; afterwards folding stays user-controlled.
+    if (active && active.id !== state.shownWorkspaceId) state.expanded.add(active.id);
+    state.shownWorkspaceId = active?.id || null;
+    renderWorkspaceSwitcher(active);
     patchKeyedList(
       elements.workspaceList,
-      state.workspaces,
+      active ? [active] : [],
       (workspace) => workspace.id,
       createWorkspaceNode,
       updateWorkspaceNode,
@@ -851,6 +898,7 @@
     const workspace = state.workspaces.find((item) => item.id === String(id));
     if (!workspace) return;
     state.expanded.add(workspace.id);
+    state.activeWorkspaceId = workspace.id;
     const lastId = state.lastTerminalByWorkspace[workspace.id];
     const last = workspace.terminals.find((terminal) => terminal.id === lastId);
     if (last) selectTerminal(last.id);
@@ -1825,7 +1873,7 @@
       "workspace-create": {
         subject: "Workspace",
         title: "Add workspace",
-        copy: "Choose an allowed folder on this server, then give it a workspace name.",
+        copy: "Open folders to choose one. The folder you are in is selected.",
         submit: "Add workspace",
         fields: [],
       },
@@ -1865,7 +1913,7 @@
 
     state.dialog = { kind, id: String(id ?? ""), workspace, terminal, config };
     if (kind === "workspace-create") {
-      state.dialog.picker = { current: "", currentName: "", selected: "", request: 0, nameDirty: false };
+      state.dialog.picker = { current: "", currentName: "", selected: "", request: 0 };
     }
     state.dialogTrigger = trigger || document.activeElement;
     elements.dialogEyebrow.textContent = config.subject;
@@ -1917,19 +1965,6 @@
     selectedPath.title = "Selected folder";
     selected.append(selectedLabel, selectedPath);
 
-    const nameField = make("div", "dialog-field");
-    const nameLabel = make("label", "", "Workspace name");
-    nameLabel.htmlFor = "dialog-name";
-    const nameInput = document.createElement("input");
-    nameInput.id = "dialog-name";
-    nameInput.name = "name";
-    nameInput.required = true;
-    nameInput.autocomplete = "off";
-    nameInput.addEventListener("input", () => {
-      if (state.dialog?.picker) state.dialog.picker.nameDirty = true;
-    });
-    nameField.append(nameLabel, nameInput);
-
     const pathInput = document.createElement("input");
     pathInput.type = "hidden";
     pathInput.name = "path";
@@ -1942,12 +1977,7 @@
     const currentPath = make("code", "folder-current", "Loading folders…");
     currentPath.id = "folder-current";
     currentWrap.append(currentLabel, currentPath);
-    const selectButton = make("button", "folder-select-current", "Use this folder");
-    selectButton.id = "folder-select-current";
-    selectButton.type = "button";
-    selectButton.disabled = true;
-    selectButton.addEventListener("click", selectCurrentPickerFolder);
-    browserHeader.append(currentWrap, selectButton);
+    browserHeader.append(currentWrap);
 
     const list = make("div", "folder-list");
     list.id = "folder-list";
@@ -1956,7 +1986,7 @@
     list.addEventListener("click", handleFolderClick);
     list.addEventListener("keydown", handleFolderKeys);
     browser.append(browserHeader, list);
-    picker.append(selected, nameField, pathInput, browser);
+    picker.append(selected, pathInput, browser);
     return picker;
   }
 
@@ -1965,10 +1995,8 @@
     if (!dialog?.picker || dialog.kind !== "workspace-create") return;
     const request = ++dialog.picker.request;
     const list = document.getElementById("folder-list");
-    const selectButton = document.getElementById("folder-select-current");
     list?.setAttribute("aria-busy", "true");
     if (list) list.replaceChildren(make("p", "folder-state", "Loading folders…"));
-    if (selectButton) selectButton.disabled = true;
     elements.dialogError.textContent = "";
     try {
       const query = path ? `?path=${encodeURIComponent(path)}` : "";
@@ -1977,7 +2005,7 @@
       dialog.picker.current = String(body.current || "");
       dialog.picker.currentName = String(body.selected_name || "workspace");
       renderPickerListing(body);
-      if (initial) selectCurrentPickerFolder();
+      selectCurrentPickerFolder();
     } catch (error) {
       if (state.dialog !== dialog || dialog.picker.request !== request) return;
       renderPickerError(friendlyError(error, "Unable to browse this folder."));
@@ -1987,8 +2015,7 @@
   function renderPickerListing(body) {
     const current = document.getElementById("folder-current");
     const list = document.getElementById("folder-list");
-    const selectButton = document.getElementById("folder-select-current");
-    if (!current || !list || !selectButton) return;
+    if (!current || !list) return;
     current.textContent = body.current;
     current.title = body.current;
     const rows = [];
@@ -1998,7 +2025,6 @@
     if (body.truncated) rows.push(make("p", "folder-state", "Showing the first 500 folders."));
     list.replaceChildren(...rows);
     list.removeAttribute("aria-busy");
-    selectButton.disabled = false;
   }
 
   function folderRow(path, label, kind) {
@@ -2036,13 +2062,11 @@
     picker.selected = picker.current;
     const selected = document.getElementById("folder-selected");
     const pathInput = document.getElementById("folder-path");
-    const nameInput = document.getElementById("dialog-name");
     if (selected) {
       selected.textContent = picker.selected;
       selected.title = picker.selected;
     }
     if (pathInput) pathInput.value = picker.selected;
-    if (nameInput && (!picker.nameDirty || !nameInput.value)) nameInput.value = picker.currentName;
     elements.dialogSubmit.disabled = false;
   }
 
@@ -2077,7 +2101,7 @@
 
     if (kind === "workspace-create") {
       path = "/workspaces";
-      options = { method: "POST", json: { name: values.name, path: values.path } };
+      options = { method: "POST", json: { path: values.path } };
     } else if (kind === "workspace-rename") {
       path = `/workspaces/${encodeURIComponent(id)}?force=true`;
       options = { method: "PATCH", json: { name: values.name } };

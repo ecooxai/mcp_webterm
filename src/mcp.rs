@@ -342,14 +342,27 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
                 arguments.get("task").context("task is required")?,
                 arguments.get("summary").context("summary is required")?,
             )?;
+            let workspace = resolve_workspace_ref(&config, required_string(&arguments, "workspace_id")?)?;
             crate::image_tool::read(
                 &config,
-                required_string(&arguments, "workspace_id")?,
+                &workspace,
                 required_string(&arguments, "path")?,
                 jpeg,
             )
         } else if name == "webterm" {
-            reject_unknown(&arguments, &["cmd", "text", "workspace", "task", "summary"])?;
+            reject_unknown(
+                &arguments,
+                &["cmd", "text", "workspace_id", "workspace", "task", "summary"],
+            )?;
+            let workspace = match (optional_string(&arguments, "workspace_id")?, optional_string(&arguments, "workspace")?) {
+                (Some(_), Some(_)) => {
+                    bail!("pass workspace_id only; workspace is a legacy alias")
+                }
+                (Some(id), None) | (None, Some(id)) => resolve_workspace_ref(&config, id)?,
+                (None, None) => bail!(
+                    "workspace_id is required: pass the workspace folder (absolute path or workspace name) once; cmd and text then use paths relative to it"
+                ),
+            };
             let max_chars = if !arguments.contains_key("text") {
                 crate::webterm_cmd::parse_for_tracking(required_string(&arguments, "cmd")?)
                     .ok()
@@ -362,7 +375,7 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
                 &config,
                 required_string(&arguments, "cmd")?,
                 optional_string(&arguments, "text")?,
-                optional_string(&arguments, "workspace")?,
+                Some(&workspace),
                 optional_string(&arguments, "task")?,
                 optional_string(&arguments, "summary")?,
             )
@@ -465,6 +478,30 @@ pub fn execute_cmd(config: &Config, text: &str) -> Result<Value> {
     Ok(raw)
 }
 
+/// Accepts an absolute workspace folder or a registered workspace name/ID and
+/// returns the canonical folder path used as cwd and ownership scope.
+pub fn resolve_workspace_ref(config: &Config, reference: &str) -> Result<String> {
+    let reference = reference.trim();
+    if reference.is_empty() || reference.len() > 4096 || reference.contains('\0') {
+        bail!("workspace_id must be a workspace folder path or workspace name");
+    }
+    let path = if reference.starts_with('/') {
+        PathBuf::from(reference)
+    } else {
+        Database::open_config(config)?
+            .workspace(reference)
+            .with_context(|| {
+                format!(
+                    "workspace_id {reference:?} is not an absolute folder or a known workspace name"
+                )
+            })?
+            .path
+    };
+    Ok(canonical_workspace_path(config, &path)?
+        .to_string_lossy()
+        .into_owned())
+}
+
 fn compact_terminal(terminal: &Value) -> Value {
     json!({"workspace_id":terminal["workspace_id"],"terminal_id":terminal["id"],"name":terminal["name"],"status":terminal["status"]})
 }
@@ -505,7 +542,8 @@ fn compact_list(config: &Config, cmd: &crate::webterm_cmd::Parsed) -> Result<Val
         }
         return Ok(value);
     }
-    if cmd.args.contains_key("workspace_id") {
+    let wants_workspaces = cmd.args.get("kind").and_then(Value::as_str) == Some("workspaces");
+    if cmd.args.contains_key("workspace_id") && !wants_workspaces {
         let workspace = workspace_arg(config, &cmd.args, false)?.context("workspace required")?;
         let terminals = database.list_terminals(Some(workspace.id))?;
         let total = terminals.len();
@@ -557,8 +595,8 @@ fn tool_definitions() -> Vec<Value> {
             "WebTerm",
             crate::webterm_cmd::DESCRIPTION,
             object_schema(
-                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder. Sets cwd for run/python and Bash, and scopes read/write. Use cmd=webterm run; do not repeat this path in cmd."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Create a descriptive task name when work starts, e.g. Webterm command cleanup; reuse unchanged in all related calls and follow-up chats. Never generic webterm/run. Provide with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with an honest quality score 0..100/100 of the current work (100 = perfect), then concrete status and this call. Under 50 words, one line. No progress numbers; the server tracks task time and call count. Provide with task."}}),
-                &["cmd"],
+                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace_id":{"type":"string","minLength":1,"maxLength":4096,"description":"Required. Workspace folder (absolute path) or registered workspace name. It is the cwd for run/python/Bash and scopes new/ls/read/write, so cmd and text use relative paths (./src, tests/x.py); never put absolute workspace paths in cmd or text."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Create a descriptive task name when work starts, e.g. Webterm command cleanup; reuse unchanged in all related calls and follow-up chats. Never generic webterm/run. Provide with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with an honest quality score 0..100/100 of the current work (100 = perfect), then concrete status and this call. Under 50 words, one line. No progress numbers; the server tracks task time and call count. Provide with task."}}),
+                &["cmd", "workspace_id"],
             ),
             json!({"type":"object","properties":{"text":{"type":"string","description":"Captured output: first 200 + last 800 characters by default; stderr is included on errors. Follow read_more with webterm read ID --full to expand retained output."}},"additionalProperties":true}),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
@@ -568,7 +606,7 @@ fn tool_definitions() -> Vec<Value> {
             "Get image",
             "Return a workspace PNG/JPEG/GIF/WebP as native image content, not base64 text. Returns JPEG quality 90 at the original resolution by default; prefer it and use jpeg=false only when exact original bytes are needed. Max 16 MiB, 32 megapixels.",
             object_schema(
-                json!({"workspace_id":{"type":"string","minLength":1,"maxLength":4096},"path":{"type":"string","minLength":1,"maxLength":4096},"jpeg":{"type":"boolean","default":true,"description":"Default true: JPEG quality 90 at original resolution (preferred). false returns the original file bytes."},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}),
+                json!({"workspace_id":{"type":"string","minLength":1,"maxLength":4096,"description":"Workspace folder (absolute path) or registered workspace name."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Image path relative to workspace_id, e.g. out/shot.png."},"jpeg":{"type":"boolean","default":true,"description":"Default true: JPEG quality 90 at original resolution (preferred). false returns the original file bytes."},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}),
                 &["workspace_id", "path", "task", "summary"],
             ),
             crate::output_contracts::schema("get_image"),
@@ -2394,7 +2432,10 @@ mod compact_tests {
                 .collect::<Vec<_>>(),
             vec!["webterm", "get_image"]
         );
-        assert_eq!(current[0]["inputSchema"]["required"], json!(["cmd"]));
+        assert_eq!(
+            current[0]["inputSchema"]["required"],
+            json!(["cmd", "workspace_id"])
+        );
         assert_eq!(
             current[0]["inputSchema"]["properties"]
                 .as_object()
@@ -2477,5 +2518,36 @@ mod compact_tests {
         }
         let p = json!({"name":"workspace_list","arguments":{}});
         assert_eq!(call_tool(c, p.as_object()).await.unwrap()["isError"], false);
+    }
+    #[tokio::test]
+    async fn compact_webterm_requires_workspace_id_and_accepts_names() {
+        let t = TempDir::new().unwrap();
+        let c = Arc::new(config(&t));
+        let folder = t.path().join("proj");
+        std::fs::create_dir(&folder).unwrap();
+        let canonical = folder.canonicalize().unwrap();
+        let text = canonical.to_str().unwrap();
+        Database::open_config(&c)
+            .unwrap()
+            .create_workspace("proj-app", &canonical)
+            .unwrap();
+        assert_eq!(resolve_workspace_ref(&c, " proj-app ").unwrap(), text);
+        assert_eq!(resolve_workspace_ref(&c, text).unwrap(), text);
+        assert!(resolve_workspace_ref(&c, "missing").is_err());
+        assert!(resolve_workspace_ref(&c, "/").is_err());
+        let p = json!({"name":"webterm","arguments":{"cmd":"help"}});
+        let r = call_tool(c.clone(), p.as_object()).await.unwrap();
+        assert_eq!(r["isError"], true);
+        assert!(r.to_string().contains("workspace_id is required"));
+        let p = json!({"name":"webterm","arguments":{"cmd":"help","workspace_id":text,"workspace":text}});
+        let r = call_tool(c.clone(), p.as_object()).await.unwrap();
+        assert_eq!(r["isError"], true);
+        assert!(r.to_string().contains("pass workspace_id only"));
+        let defs = tool_definitions();
+        let webterm = defs.iter().find(|d| d["name"] == "webterm").unwrap();
+        assert_eq!(
+            webterm["inputSchema"]["required"],
+            json!(["cmd", "workspace_id"])
+        );
     }
 }

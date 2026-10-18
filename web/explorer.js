@@ -135,25 +135,23 @@
   function pane() {
     const content = el("div", "workspace-content"),
       area = el("div", "workspace-files"),
-      toolbar = el("div", "file-tree-toolbar"),
-      title = el("span", "file-tree-title", "Files");
+      toolbar = el("div", "file-tree-toolbar");
     const refresh = button("", "file-tree-refresh");
     refresh.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5"/></svg>';
     refresh.title = "Refresh files now";
     refresh.setAttribute("aria-label", "Refresh workspace files");
-    const info = el("span", "file-tree-info", "Every 5s");
-    toolbar.append(title, info, refresh);
     const search = el("input", "file-tree-search");
     search.type = "search";
-    search.placeholder = "Filter files…";
+    search.placeholder = "Search files (newest first)…";
     search.setAttribute("aria-label", "Filter loaded workspace files");
     search.title =
       "Filter names in loaded folders; expand folders to include their contents";
     const tree = el("div", "folder-tree");
     tree.setAttribute("role", "tree");
     tree.setAttribute("aria-label", "Workspace files");
-    area.append(toolbar, search, tree);
+    toolbar.append(search, refresh);
+    area.append(toolbar, tree);
     const terminals = el("div", "terminal-list");
     terminals.setAttribute("role", "group");
     content.append(area, terminals);
@@ -348,14 +346,11 @@
     renderFolder(m, m.ws.path, parent, 0);
     parent.scrollTop = scroll;
     const root = m.cache.get(m.ws.path),
-      info = m.node.querySelector(".file-tree-info");
-    info.textContent = root?.error
-      ? "Retrying…"
-      : root?.loading
-        ? "Refreshing…"
-        : "Every 5s";
-    info.title =
-      root?.error || "Expanded folders refresh automatically every 5 seconds";
+      refresh = m.node.querySelector(".file-tree-refresh");
+    refresh.classList.toggle("is-busy", Boolean(root?.loading));
+    refresh.title = root?.error
+      ? `Retrying: ${root.error}`
+      : "Refresh files now (expanded folders refresh automatically)";
   }
   function renderFolder(m, path, parent, depth) {
     const cache = m.cache.get(path);
@@ -369,6 +364,14 @@
     ))
       msg.remove();
     let entries = [...cache.entries];
+    if (m.filter)
+      entries.sort(
+        (a, b) =>
+          Number(a.is_dir) - Number(b.is_dir) ||
+          Number(b.modified_ms || 0) - Number(a.modified_ms || 0) ||
+          a.name.localeCompare(b.name),
+      );
+    else
     entries.sort(
       (a, b) =>
         (cache.newRanks.get(b.path) || 0) - (cache.newRanks.get(a.path) || 0) ||

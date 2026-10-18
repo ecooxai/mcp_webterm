@@ -49,7 +49,7 @@ pub fn open(config: &Config, workspace: &str, requested: &str) -> Result<(File, 
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&canonical)
         .context("open file")?;
-    let actual = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+    let actual = crate::platform::fd_path(file.as_raw_fd())?;
     if actual != canonical || !actual.starts_with(&root) {
         bail!("path changed during open; retry");
     }
@@ -115,7 +115,10 @@ pub fn listing(config: &Config, workspace: &str, path: &str, offset: usize) -> R
         bail!("path is not a folder");
     }
     // Enumerate the verified directory descriptor so a path rename cannot redirect the read.
-    let descriptor = format!("/proc/self/fd/{}", dir.as_raw_fd());
+    #[cfg(target_os = "linux")]
+    let descriptor = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    #[cfg(not(target_os = "linux"))]
+    let descriptor = crate::platform::fd_path(dir.as_raw_fd())?;
     let mut entries = Vec::new();
     for item in fs::read_dir(descriptor)? {
         let Ok(item) = item else { continue };
@@ -191,20 +194,10 @@ pub fn preview(config: &Config, workspace: &str, path: &str) -> Result<Value> {
 /// Current directory of the terminal's foreground job (e.g. an editor or CLI
 /// started from the shell), falling back to the shell itself.
 pub fn foreground_cwd(pid: u32) -> Option<PathBuf> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // Fields after the parenthesised command: state ppid pgrp session tty_nr tpgid.
-    let tpgid = stat
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(5)
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|v| *v > 0);
-    tpgid
+    crate::platform::foreground_group(pid)
         .into_iter()
-        .map(|p| p as u64)
-        .chain([u64::from(pid)])
-        .find_map(|p| fs::read_link(format!("/proc/{p}/cwd")).ok())
+        .chain([pid])
+        .find_map(crate::platform::process_cwd)
 }
 
 const RESOLVE_LIMIT: usize = 50;

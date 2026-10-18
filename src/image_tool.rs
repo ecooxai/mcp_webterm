@@ -50,8 +50,7 @@ pub fn read(config: &Config, workspace: &str, path: &str, jpeg: bool) -> Result<
         bail!("image must be nonempty and no larger than 16 MiB");
     }
     // Verify the opened descriptor, not only a path checked before open.
-    let opened = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
-        .context("verify opened image path")?;
+    let opened = crate::platform::fd_path(file.as_raw_fd()).context("verify opened image path")?;
     if !opened.starts_with(&root) || opened != canonical {
         bail!("image path changed during open");
     }

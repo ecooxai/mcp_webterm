@@ -290,15 +290,11 @@ impl RuntimeClient {
         let value = response.into_result()?;
         let hello: SubscribeHello =
             serde_json::from_value(value).context("decode subscription snapshot")?;
-        stream
-            .set_read_timeout(None)
-            .context("clear runtime subscription timeout")?;
+        // macOS rejects socket options once the peer has hung up; the next read reports that.
+        let _ = stream.set_read_timeout(None);
         // Keep the BufReader: it may already hold events received in the same
         // read as the handshake. Replacing it would silently discard output.
-        reader
-            .get_ref()
-            .set_read_timeout(None)
-            .context("clear runtime event timeout")?;
+        let _ = reader.get_ref().set_read_timeout(None);
         Ok(Subscription {
             snapshot: hello.snapshot,
             cols: hello.cols,
@@ -917,7 +913,7 @@ impl Session {
                 census.is_some_and(|census| census.get(&pid).copied().unwrap_or(0) <= 1)
             });
         if idle_shell && let Some(pid) = model.pid {
-            if let Ok(target) = fs::read_link(format!("/proc/{pid}/cwd"))
+            if let Some(target) = crate::platform::process_cwd(pid)
                 && let Ok(mut resume) = self.resume_cwd.lock()
             {
                 *resume = Some(target);
@@ -1414,30 +1410,13 @@ impl Session {
             // Interactive shells put background/foreground jobs in distinct
             // process groups, but they remain in this child's terminal session.
             // Never signal any other user's session or unrelated process group.
-            #[cfg(target_os = "linux")]
-            if let Ok(entries) = fs::read_dir("/proc") {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-                        continue;
-                    }
-                    let Ok(metadata) = entry.metadata() else {
-                        continue;
-                    };
-                    if metadata.uid() != unsafe { libc::geteuid() } {
-                        continue;
-                    }
-                    let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-                        continue;
-                    };
-                    let Some((_, rest)) = stat.rsplit_once(") ") else {
-                        continue;
-                    };
-                    let fields: Vec<_> = rest.split_whitespace().take(4).collect();
-                    if fields.len() == 4 && fields[3].parse::<u32>().ok() == Some(pid) {
-                        if let Ok(group) = fields[2].parse::<i32>() {
-                            groups.insert(group);
-                        }
-                    }
+            let uid = unsafe { libc::geteuid() };
+            for process in crate::platform::process_ids().unwrap_or_default() {
+                if process.uid == uid
+                    && process.session == pid
+                    && let Ok(group) = i32::try_from(process.pgid)
+                {
+                    groups.insert(group);
                 }
             }
         }
@@ -2004,10 +1983,26 @@ impl Drop for SocketGuard {
 
 fn wake_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
+    #[cfg(target_os = "linux")]
+    let created = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+    #[cfg(not(target_os = "linux"))]
+    let created = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if created < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+    let pipe = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    #[cfg(not(target_os = "linux"))]
+    for fd in [fds[0], fds[1]] {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+        }
+    }
+    Ok(pipe)
 }
 
 fn raise_fd_limit() {
@@ -2027,30 +2022,9 @@ fn raise_fd_limit() {
     }
 }
 
-/// Process count per terminal session ID (the shell's PID), from /proc.
-#[cfg(target_os = "linux")]
+/// Process count per terminal session ID (the shell's PID).
 fn session_census() -> Option<HashMap<u32, usize>> {
-    let mut counts = HashMap::new();
-    for entry in fs::read_dir("/proc").ok()?.flatten() {
-        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-            continue;
-        }
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(") ") else {
-            continue;
-        };
-        if let Some(session) = rest.split_whitespace().nth(3).and_then(|v| v.parse().ok()) {
-            *counts.entry(session).or_insert(0) += 1;
-        }
-    }
-    Some(counts)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn session_census() -> Option<HashMap<u32, usize>> {
-    None
+    crate::platform::session_census()
 }
 
 fn trim_heap() {

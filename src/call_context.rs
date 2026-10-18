@@ -87,9 +87,10 @@ mod tests {
     #[test]
     fn validates_and_scopes_context_without_global_environment() {
         let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
         let mut config = Config::default();
-        config.workspace_roots = vec![root.path().to_owned()];
-        let path = root.path().to_str().unwrap();
+        config.workspace_roots = vec![root_path.clone()];
+        let path = root_path.to_str().unwrap();
         let context = CallContext::new(
             &config,
             Some(path),

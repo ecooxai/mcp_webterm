@@ -1,4 +1,4 @@
-"""Bounded Linux task-manager collector. No shell commands or environment disclosure."""
+"""Bounded task-manager collector (Linux /proc, macOS ps/lsof). No shell or environment disclosure."""
 from __future__ import annotations
 import csv
 import glob
@@ -267,6 +267,23 @@ def drm_devices(root=SYS):
     return result
 
 
+def disk_usage():
+    disks = []
+    seen = set()
+    for folder in ('/', '/home', '/build', '/System/Volumes/Data'):
+        try:
+            device = os.stat(folder).st_dev
+            if device in seen:
+                continue
+            seen.add(device); stat = os.statvfs(folder)
+            disks.append({'path': folder, 'total_bytes': stat.f_blocks*stat.f_frsize,
+                'used_bytes': (stat.f_blocks-stat.f_bfree)*stat.f_frsize,
+                'available_bytes': stat.f_bavail*stat.f_frsize})
+        except OSError:
+            pass
+    return disks
+
+
 def snapshot(previous=None, parent=None):
     previous = previous or {}; now = time.monotonic()
     elapsed = now - previous.get('at', now)
@@ -306,19 +323,7 @@ def snapshot(previous=None, parent=None):
             rows.append(row)
         except (OSError, ValueError, KeyError, ProcessLookupError):
             continue
-    disks = []
-    seen = set()
-    for folder in ('/', '/home', '/build'):
-        try:
-            device = os.stat(folder).st_dev
-            if device in seen:
-                continue
-            seen.add(device); stat = os.statvfs(folder)
-            disks.append({'path': folder, 'total_bytes': stat.f_blocks*stat.f_frsize,
-                'used_bytes': (stat.f_blocks-stat.f_bfree)*stat.f_frsize,
-                'available_bytes': stat.f_bavail*stat.f_frsize})
-        except OSError:
-            pass
+    disks = disk_usage()
     data = {'timestamp': time.time(), 'sample_interval_s': round(elapsed, 3),
         'cpu_percent': round(max(0, min(100, busy)), 2) if busy is not None else None,
         'logical_cpus': os.cpu_count(), 'memory_total_bytes': total,
@@ -378,6 +383,159 @@ def action(pid, expected, kind, nice, parent):
         identity(pid, expected, parent)
         os.kill(pid, sig)
     return {'data': {'ok': True, 'pid': pid, 'action': kind}}
+
+
+# macOS has no /proc: the same rows come from ps(1) and lsof(8).
+def run_text(args, timeout=5):
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False,
+                              env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LC_ALL': 'C'})
+        return done.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+
+
+def cpu_seconds(value):
+    days, _, value = value.rpartition('-')
+    total = 0.0
+    for part in value.split(':'):
+        total = total * 60 + float(part)
+    return total + (int(days) * 86400 if days else 0)
+
+
+def darwin_ps(pid=None):
+    args = ['ps', '-o', 'pid=,ppid=,uid=,nice=,rss=,time=,state=,lstart=,comm=']
+    args += ['-p', str(pid)] if pid else ['-ax']
+    table = {}
+    for line in run_text(args).splitlines():
+        parts = line.split(None, 12)
+        if len(parts) < 13:
+            continue
+        try:
+            pid_, ppid, uid, rss = int(parts[0]), int(parts[1]), int(parts[2]), int(parts[4])
+            started = int(time.mktime(time.strptime(' '.join(parts[7:12]), '%a %b %d %H:%M:%S %Y')))
+            ticks = int(cpu_seconds(parts[5]) * CLOCK)
+        except ValueError:
+            continue
+        exe = parts[12].strip()
+        table[pid_] = {'pid': pid_, 'ppid': ppid, 'uid': uid, 'nice': int(parts[3]) if parts[3].lstrip('-').isdigit() else 0,
+            'state': parts[6][:1], 'threads': None, 'ticks': ticks, 'start_time': str(started),
+            'memory_bytes': rss * 1024, 'exe': exe, 'name': os.path.basename(exe) or exe}
+    return table
+
+
+def darwin_ports():
+    result = {}
+    pid = protocol = None
+    for line in run_text(['lsof', '-nP', '-w', '-iTCP', '-sTCP:LISTEN', '-iUDP', '-FpPn'], 10).splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == 'p':
+            pid = int(value) if value.isdigit() else None
+        elif tag == 'P':
+            protocol = value.lower()
+        elif tag == 'n' and pid and protocol in ('tcp', 'udp') and '->' not in value:
+            host, _, port = value.rpartition(':')
+            if not port.isdigit() or not int(port):
+                continue
+            host = host.strip('[]')
+            address = '0.0.0.0' if host == '*' else host
+            port = int(port)
+            result.setdefault(pid, {})[(protocol, address, port)] = {'port': port, 'address': address,
+                'protocol': protocol, 'proxy_url': '/proxy/' + str(port) + '/' if protocol == 'tcp' else None}
+    return {pid: sorted(items.values(), key=lambda x: (x['port'], x['protocol'])) for pid, items in result.items()}
+
+
+def darwin_memory():
+    try:
+        total = int(run_text(['sysctl', '-n', 'hw.memsize']).strip())
+    except ValueError:
+        total = 0
+    text = run_text(['vm_stat'])
+    match = re.search(r'page size of (\d+) bytes', text)
+    page = int(match.group(1)) if match else PAGES
+    pages = {k: int(v.rstrip('.')) for k, v in key_values(text).items() if v.rstrip('.').isdigit()}
+    free = sum(pages.get(k, 0) for k in ('Pages free', 'Pages inactive', 'Pages speculative')) * page
+    return total, min(total, free)
+
+
+def darwin_protected(parent, table=None):
+    table = table if table is not None else darwin_ps()
+    protected = {1, os.getpid()}
+    cursor = parent
+    for _ in range(64):
+        if cursor in protected or cursor < 1 or cursor not in table:
+            protected.add(cursor)
+            break
+        protected.add(cursor)
+        cursor = table[cursor]['ppid']
+    return protected
+
+
+def darwin_row(info, protected, ports=None):
+    row = dict(info)
+    row['user'] = username(row['uid'])
+    row['can_control'] = row['uid'] == os.geteuid() and row['pid'] not in protected and row['name'] not in ('webterm', 'webterm-runtime')
+    row['read_bytes'] = row['write_bytes'] = None
+    if ports is not None:
+        row['ports'] = ports.get(row['pid'], [])
+        row['gpu_engine_ns'] = row['gpu_memory_bytes'] = None
+    return row
+
+
+def darwin_snapshot(previous=None, parent=None):
+    # Each sample is a new interpreter; wall time is the shared clock between them.
+    previous = previous or {}; now = time.time()
+    elapsed = now - previous.get('at', now)
+    table = darwin_ps(); ports = darwin_ports()
+    protected = darwin_protected(parent or os.getppid(), table)
+    total, available = darwin_memory()
+    raw = {}; rows = []; busy = 0.0; sampled = False
+    pids = sorted(table)
+    for pid in pids[:MAX_PROCESSES]:
+        row = darwin_row(table[pid], protected, ports)
+        key = str(pid) + ':' + row['start_time']
+        old = previous.get('processes', {}).get(key, {})
+        raw[key] = {'ticks': row['ticks']}
+        rate = delta(row.pop('ticks'), old.get('ticks'), elapsed)
+        if rate is not None:
+            busy += rate; sampled = True
+        row['cpu_percent'] = round(rate / CLOCK * 100, 2) if rate is not None else None
+        row['memory_percent'] = round(row['memory_bytes'] / max(total, 1) * 100, 2)
+        row['disk_read_bps'] = row['disk_write_bps'] = row['gpu_percent'] = None
+        row.pop('gpu_engine_ns', None)
+        rows.append(row)
+    cpus = os.cpu_count() or 1
+    cpu = round(max(0, min(100, busy / CLOCK * 100 / cpus)), 2) if sampled else None
+    data = {'timestamp': time.time(), 'sample_interval_s': round(elapsed, 3), 'cpu_percent': cpu,
+        'logical_cpus': cpus, 'memory_total_bytes': total, 'memory_used_bytes': total-available,
+        'disks': disk_usage(), 'gpu_devices': [], 'processes': rows[:MAX_ROWS], 'total_processes': len(pids),
+        'truncated': len(rows) > MAX_ROWS or len(pids) > MAX_PROCESSES,
+        'notes': ['CPU per process uses 100% per logical core.',
+                  'macOS does not expose per-process disk I/O or GPU use without administrator tools; those columns are null.']}
+    return {'data': data, 'state': {'at': now, 'cpu': [0, 0], 'processes': raw}}
+
+
+def darwin_process_info(pid, protected, ports=None):
+    info = darwin_ps(pid).get(pid)
+    if info is None:
+        raise ProcessLookupError(pid)
+    return darwin_row(info, protected, ports)
+
+
+def darwin_detail(pid, expected, parent):
+    info = identity(pid, expected, parent)
+    info.pop('ticks', None)
+    cwd = [l[1:] for l in run_text(['lsof', '-nP', '-w', '-a', '-p', str(pid), '-d', 'cwd', '-Fn']).splitlines() if l.startswith('n')]
+    fds = [l for l in run_text(['lsof', '-nP', '-w', '-p', str(pid), '-Ff']).splitlines() if l.startswith('f')]
+    info.update(cwd=cwd[0] if cwd else '', ports=darwin_ports().get(pid, []), open_fds=len(fds) or None,
+        elapsed_s=max(0, time.time() - int(expected)),
+        security_note='Environment variables and command-line secrets are not exposed.')
+    return {'data': info}
+
+
+if sys.platform == 'darwin':
+    snapshot, process_info, detail = darwin_snapshot, darwin_process_info, darwin_detail
+    protected_pids = darwin_protected
 
 
 def main():

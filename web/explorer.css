@@ -685,6 +685,21 @@
 .log-task {
   color: #c0d8ef;
 }
+.log-subject {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  color: #e3efff;
+  font:
+    12px ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-subject[hidden] {
+  display: none;
+}
 .log-summary {
   color: #98b0cb;
 }
@@ -1378,3 +1393,51 @@
     border-bottom: 1px solid #22344a;
   }
 }
+
+.tool-log-tasks {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 0 10px;
+  scrollbar-width: thin;
+}
+.tool-log-task-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  max-width: 320px;
+  padding: 6px 11px;
+  border: 1px solid #2c3a4b;
+  border-radius: 999px;
+  background: #0f1824;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tool-log-task-chip:hover { border-color: #4b6178; }
+.task-chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5b6b7d;
+}
+.tool-log-task-chip[data-active="true"] .task-chip-dot { background: #76ead0; }
+.task-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-chip-stats {
+  color: #9fb1c4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.log-task-stats {
+  color: #9fb1c4;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.log-task-stats[data-active="true"] { color: #8ce3d1; }

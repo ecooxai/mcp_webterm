@@ -2,7 +2,7 @@
 use crate::{config::Config, db::canonical_workspace_path};
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::{ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits, RgbImage, codecs::jpeg::JpegEncoder};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -15,8 +15,9 @@ use std::{
 };
 pub const MAX_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PIXELS: u64 = 32 * 1024 * 1024;
+pub const JPEG_QUALITY: u8 = 90;
 
-pub fn read(config: &Config, workspace: &str, path: &str) -> Result<Value> {
+pub fn read(config: &Config, workspace: &str, path: &str, jpeg: bool) -> Result<Value> {
     if !workspace.starts_with('/') || workspace.len() > 4096 || workspace.contains('\0') {
         bail!("workspace_id must be an absolute folder path");
     }
@@ -89,13 +90,48 @@ pub fn read(config: &Config, workspace: &str, path: &str) -> Result<Value> {
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
     // Validate the first frame before exposing bytes; image extensions are not trusted.
-    reader
+    let decoded = reader
         .decode()
         .context("image is corrupt or exceeds decoder limits")?;
-    let data = json!({"workspace_id":root,"path":canonical,"mime_type":mime,"bytes":bytes.len(),"width":width,"height":height});
+    let original_bytes = bytes.len();
+    // An existing JPEG is kept when re-encoding would not make it smaller.
+    let (out, out_mime, quality) = if jpeg {
+        let encoded = encode_jpeg(&decoded)?;
+        if format == ImageFormat::Jpeg && bytes.len() <= encoded.len() {
+            (bytes, mime, None)
+        } else {
+            (encoded, "image/jpeg", Some(JPEG_QUALITY))
+        }
+    } else {
+        (bytes, mime, None)
+    };
+    drop(decoded);
+    let data = json!({"workspace_id":root,"path":canonical,"mime_type":out_mime,"bytes":out.len(),"width":width,"height":height,"original_mime_type":mime,"original_bytes":original_bytes,"jpeg_quality":quality});
     Ok(
-        json!({"isError":false,"structuredContent":data,"content":[{"type":"image","mimeType":mime,"data":STANDARD.encode(&bytes)}]}),
+        json!({"isError":false,"structuredContent":data,"content":[{"type":"image","mimeType":out_mime,"data":STANDARD.encode(&out)}]}),
     )
+}
+
+/// Encode at the original resolution; transparent pixels are composited onto white.
+fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>> {
+    let rgb = if image.color().has_alpha() {
+        let rgba = image.to_rgba8();
+        let mut rgb = RgbImage::new(rgba.width(), rgba.height());
+        for (dst, src) in rgb.pixels_mut().zip(rgba.pixels()) {
+            let alpha = u32::from(src[3]);
+            for c in 0..3 {
+                dst[c] = ((u32::from(src[c]) * alpha + 255 * (255 - alpha) + 127) / 255) as u8;
+            }
+        }
+        rgb
+    } else {
+        image.to_rgb8()
+    };
+    let mut out = Vec::new();
+    JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY)
+        .encode_image(&rgb)
+        .context("encode JPEG")?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -111,6 +147,51 @@ mod tests {
         };
         (dir, c)
     }
+    fn read_original(c: &Config, workspace: &str, path: &str) -> Result<Value> {
+        read(c, workspace, path, false)
+    }
+    #[test]
+    fn jpeg_by_default_keeps_resolution_and_flattens_alpha() {
+        let (d, c) = setup();
+        let mut image = RgbaImage::new(64, 48);
+        for (x, y, p) in image.enumerate_pixels_mut() {
+            *p = image::Rgba([
+                (x * 4) as u8,
+                (y * 5) as u8,
+                90,
+                if x < 8 { 0 } else { 255 },
+            ]);
+        }
+        let mut raw = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut raw, ImageFormat::Png)
+            .unwrap();
+        fs::write(d.path().join("shot.png"), raw.get_ref()).unwrap();
+        let root = d.path().to_str().unwrap();
+        let v = read(&c, root, "shot.png", true).unwrap();
+        assert_eq!(v["content"][0]["mimeType"], "image/jpeg");
+        assert_eq!(v["structuredContent"]["mime_type"], "image/jpeg");
+        assert_eq!(v["structuredContent"]["original_mime_type"], "image/png");
+        assert_eq!(v["structuredContent"]["jpeg_quality"], JPEG_QUALITY);
+        let bytes = STANDARD
+            .decode(v["content"][0]["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(v["structuredContent"]["bytes"], bytes.len());
+        assert_eq!(image::guess_format(&bytes).unwrap(), ImageFormat::Jpeg);
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (64, 48));
+        // Transparent columns become white rather than black.
+        assert!(decoded.get_pixel(2, 10).0.iter().all(|c| *c > 230));
+        let original = read(&c, root, "shot.png", false).unwrap();
+        assert_eq!(original["content"][0]["mimeType"], "image/png");
+        assert_eq!(
+            STANDARD
+                .decode(original["content"][0]["data"].as_str().unwrap())
+                .unwrap(),
+            raw.into_inner()
+        );
+        assert!(original["structuredContent"]["jpeg_quality"].is_null());
+    }
     fn png() -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(RgbaImage::new(3, 2))
@@ -123,7 +204,7 @@ mod tests {
         let (d, c) = setup();
         let raw = png();
         fs::write(d.path().join("different.ext"), &raw).unwrap();
-        let v = read(&c, d.path().to_str().unwrap(), "different.ext").unwrap();
+        let v = read_original(&c, d.path().to_str().unwrap(), "different.ext").unwrap();
         assert_eq!(v["structuredContent"]["width"], 3);
         assert_eq!(v["content"][0]["mimeType"], "image/png");
         assert_eq!(
@@ -139,9 +220,9 @@ mod tests {
         let outside = TempDir::new().unwrap();
         let p = outside.path().join("x.png");
         fs::write(&p, png()).unwrap();
-        assert!(read(&c, d.path().to_str().unwrap(), p.to_str().unwrap()).is_err());
+        assert!(read_original(&c, d.path().to_str().unwrap(), p.to_str().unwrap()).is_err());
         std::os::unix::fs::symlink(&p, d.path().join("escape")).unwrap();
-        assert!(read(&c, d.path().to_str().unwrap(), "escape").is_err());
+        assert!(read_original(&c, d.path().to_str().unwrap(), "escape").is_err());
     }
     #[test]
     fn rejects_nonimages_empty_directory_and_oversized() {
@@ -149,12 +230,12 @@ mod tests {
         let root = d.path().to_str().unwrap();
         for (name, data) in [("fake.png", b"not an image".to_vec()), ("empty", vec![])] {
             fs::write(d.path().join(name), data).unwrap();
-            assert!(read(&c, root, name).is_err());
+            assert!(read_original(&c, root, name).is_err());
         }
-        assert!(read(&c, root, ".").is_err());
+        assert!(read_original(&c, root, ".").is_err());
         let f = fs::File::create(d.path().join("big")).unwrap();
         f.set_len(MAX_BYTES + 1).unwrap();
-        assert!(read(&c, root, "big").is_err());
+        assert!(read_original(&c, root, "big").is_err());
     }
     #[test]
     fn every_supported_format_decodes() {
@@ -168,7 +249,7 @@ mod tests {
             let mut out = Cursor::new(Vec::new());
             DynamicImage::new_rgb8(4, 3).write_to(&mut out, f).unwrap();
             fs::write(d.path().join("fixture"), out.into_inner()).unwrap();
-            let v = read(&c, d.path().to_str().unwrap(), "fixture").unwrap();
+            let v = read_original(&c, d.path().to_str().unwrap(), "fixture").unwrap();
             assert_eq!(v["structuredContent"]["mime_type"], mime);
         }
     }
@@ -178,13 +259,13 @@ mod tests {
         let mut raw = png();
         raw.truncate(35);
         fs::write(d.path().join("bad.png"), raw).unwrap();
-        assert!(read(&c, d.path().to_str().unwrap(), "bad.png").is_err());
+        assert!(read_original(&c, d.path().to_str().unwrap(), "bad.png").is_err());
     }
     #[test]
     fn accepts_internal_symlink() {
         let (d, c) = setup();
         fs::write(d.path().join("x.png"), png()).unwrap();
         std::os::unix::fs::symlink("x.png", d.path().join("link")).unwrap();
-        assert!(read(&c, d.path().to_str().unwrap(), "link").is_ok());
+        assert!(read_original(&c, d.path().to_str().unwrap(), "link").is_ok());
     }
 }

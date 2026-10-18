@@ -476,9 +476,13 @@ supply the MCP bearer token directly to the preview URL. Keep private dev apps
 behind this authentication; public sharing remains an explicit cloudflared action.
 
 `get_image` is read-only and accepts `workspace_id` (absolute folder), `path`
-(relative to the folder or an absolute path inside it), `task`, and `summary`.
-It returns a native MCP `image` block plus small, schema-validated metadata:
-path, MIME type, byte count and dimensions. The gateway preserves the image block
+(relative to the folder or an absolute path inside it), optional `jpeg`, `task`,
+and `summary`. By default (`jpeg` true, preferred) the image is returned as JPEG
+quality 90 at its original resolution (transparency is composited onto white;
+an existing JPEG is kept when re-encoding would not shrink it). `jpeg: false`
+returns the original file bytes. It returns a native MCP `image` block plus small,
+schema-validated metadata: path, returned and original MIME type, byte counts,
+JPEG quality and dimensions. The gateway preserves the image block
 instead of wrapping it as text. PNG, JPEG, GIF and WebP are detected from bytes;
 extensions are not trusted. Limits are 16 MiB encoded file bytes, 16384 pixels
 per side, 32 megapixels and bounded decoding (first frame for animations).
@@ -487,7 +491,8 @@ corrupt files and oversized images are rejected. Image decoding concurrency is
 limited to two calls. No shell, new terminal, or file upload is involved.
 
 Example: `get_image({"workspace_id":"/home/dev/project/app","path":"screenshot.png",
-"task":"Inspect UI","summary":"80/100 Checking rendered page"})`.
+"task":"Inspect UI","summary":"80/100 Checking rendered page"})` returns JPEG;
+add `"jpeg":false` for the original PNG.
 
 Image data is sent in the native image block, never clipped by the 2000-character
 text preview. `/log` retains metadata and an explicit binary-omission marker,
@@ -560,10 +565,12 @@ python -m pytest tests/web/test_explorer_live.py -q
 
 ## Workspace-only commands and task continuity
 
-Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"40/100 Progress: parser fixed; verifying the build"})`.
+Use `webterm({"cmd":"webterm run","workspace":"/home/dev/project/app","text":"pwd","task":"App build verification","summary":"70/100 Parser fixed; verifying the build"})`.
 The workspace parameter sets the working directory for run/python and ordinary Bash, and scopes reads/writes. Do not repeat the path in cmd. Legacy positional paths still work; a conflicting path is rejected before execution.
 
-Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with honest current progress or quality `n/100`, give concrete current status, and contain fewer than 50 words. Do not reset progress to zero on each call or claim completion before testing.
+Choose a descriptive task name when work starts and reuse that exact name across related calls and follow-up chats. Avoid generic names such as `webterm`, `run`, or `task`. Summaries must start with an honest quality score `n/100` for the current work (100 = perfect), give concrete current status, and contain fewer than 50 words. Do not send progress numbers or claim completion before testing.
+
+The server tracks each task's total running time (latest call minus first call) and total call count; clients do not report them. The `/log` view shows both on every call and in a recent-task bar. If a task name has had no calls for 5 minutes and none are running, its next call starts a new task `NAME-2` (then `NAME-3`, ...) timed from that call.
 
 Modern Webterm MCP results contain terminal output in `structuredContent.text`, with `content: []` instead of a duplicate JSON text block. Error text and native image blocks are retained. Hidden legacy tools and the internal CLI/PTY protocol keep their existing keys. Clients must consume structuredContent; old clients that read only content will need updating. Log details also collapse duplicate payloads in historical entries without rewriting stored history.
 

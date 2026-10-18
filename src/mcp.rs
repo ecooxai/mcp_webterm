@@ -329,7 +329,15 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
     let task = tokio::task::spawn_blocking(move || {
         let _shell_slot = _shell_slot;
         if name == "get_image" {
-            reject_unknown(&arguments, &["workspace_id", "path", "task", "summary"])?;
+            reject_unknown(
+                &arguments,
+                &["workspace_id", "path", "jpeg", "task", "summary"],
+            )?;
+            let jpeg = match arguments.get("jpeg") {
+                None => true,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => bail!("jpeg must be a boolean"),
+            };
             validate_tracking(
                 arguments.get("task").context("task is required")?,
                 arguments.get("summary").context("summary is required")?,
@@ -338,6 +346,7 @@ async fn call_tool(config: Arc<Config>, params: Option<&Map<String, Value>>) -> 
                 &config,
                 required_string(&arguments, "workspace_id")?,
                 required_string(&arguments, "path")?,
+                jpeg,
             )
         } else if name == "webterm" {
             reject_unknown(&arguments, &["cmd", "text", "workspace", "task", "summary"])?;
@@ -420,7 +429,7 @@ pub fn execute_cmd(config: &Config, text: &str) -> Result<Value> {
         args.insert(
             "summary".into(),
             json!(cmd.summary.clone().unwrap_or_else(|| {
-                "0/100 Progress not supplied; include task and summary".to_owned()
+                "0/100 Quality score not supplied; include task and summary".to_owned()
             })),
         );
     }
@@ -548,7 +557,7 @@ fn tool_definitions() -> Vec<Value> {
             "WebTerm",
             crate::webterm_cmd::DESCRIPTION,
             object_schema(
-                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder. Sets cwd for run/python and Bash, and scopes read/write. Use cmd=webterm run; do not repeat this path in cmd."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Create a descriptive task name when work starts, e.g. Webterm command cleanup; reuse unchanged in all related calls and follow-up chats. Never generic webterm/run. Provide with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with honest current progress or quality 0..100/100, then concrete status and this call. Under 50 words, one line. Carry progress forward; never reset to 0 per call. Provide with task."}}),
+                json!({"cmd":{"type":"string","minLength":1,"maxLength":crate::webterm_cmd::MAX_CMD_BYTES},"text":{"type":"string","maxLength":65536,"description":"Literal run/python code (32 KiB) or write input (64 KiB). Use one native command header; omit inline code. Empty write text is allowed."},"workspace":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^/","description":"Absolute existing workspace folder. Sets cwd for run/python and Bash, and scopes read/write. Use cmd=webterm run; do not repeat this path in cmd."},"task":{"type":"string","minLength":1,"maxLength":80,"description":"Create a descriptive task name when work starts, e.g. Webterm command cleanup; reuse unchanged in all related calls and follow-up chats. Never generic webterm/run. Provide with summary."},"summary":{"type":"string","minLength":7,"maxLength":2048,"description":"Start with an honest quality score 0..100/100 of the current work (100 = perfect), then concrete status and this call. Under 50 words, one line. No progress numbers; the server tracks task time and call count. Provide with task."}}),
                 &["cmd"],
             ),
             json!({"type":"object","properties":{"text":{"type":"string","description":"Captured output: first 200 + last 800 characters by default; stderr is included on errors. Follow read_more with webterm read ID --full to expand retained output."}},"additionalProperties":true}),
@@ -557,9 +566,9 @@ fn tool_definitions() -> Vec<Value> {
         tool_definition(
             "get_image",
             "Get image",
-            "Return a workspace PNG/JPEG/GIF/WebP as native image content, not base64 text. Max 16 MiB, 32 megapixels.",
+            "Return a workspace PNG/JPEG/GIF/WebP as native image content, not base64 text. Returns JPEG quality 90 at the original resolution by default; prefer it and use jpeg=false only when exact original bytes are needed. Max 16 MiB, 32 megapixels.",
             object_schema(
-                json!({"workspace_id":{"type":"string","minLength":1,"maxLength":4096},"path":{"type":"string","minLength":1,"maxLength":4096},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}),
+                json!({"workspace_id":{"type":"string","minLength":1,"maxLength":4096},"path":{"type":"string","minLength":1,"maxLength":4096},"jpeg":{"type":"boolean","default":true,"description":"Default true: JPEG quality 90 at original resolution (preferred). false returns the original file bytes."},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}),
                 &["workspace_id", "path", "task", "summary"],
             ),
             crate::output_contracts::schema("get_image"),
@@ -1337,14 +1346,14 @@ fn legacy_tool_definitions() -> Vec<Value> {
         properties[key] = json!({"type":"string","minLength":1,"maxLength":32768});
         definitions.push(tool_definition(name,name,"Build, test and debug in a persistent virtual terminal in workspace_id. Wait up to 20 seconds by default; return output and exit_code when complete, otherwise a running terminal_id. Prefer full_output=false.",object_schema(properties,&["workspace_id",key]),json!({"type":"object"}),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})));
     }
-    definitions.push(tool_definition("get_image","Get image","Return one PNG/JPEG/GIF/WebP file as native MCP image content so the client can see it. Path is confined to workspace_id; max 16 MiB and 32 megapixels. No shell or file upload.",object_schema(json!({"workspace_id":workspace.clone(),"path":{"type":"string","minLength":1,"maxLength":4096},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}), &["workspace_id","path","task","summary"]),json!({"type":"object"}),json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})));
+    definitions.push(tool_definition("get_image","Get image","Return one PNG/JPEG/GIF/WebP file as native MCP image content so the client can see it. JPEG quality 90 at original resolution by default (preferred); jpeg=false returns the original file. Path is confined to workspace_id; max 16 MiB and 32 megapixels. No shell or file upload.",object_schema(json!({"workspace_id":workspace.clone(),"path":{"type":"string","minLength":1,"maxLength":4096},"jpeg":{"type":"boolean","default":true,"description":"Default true: JPEG quality 90 at original resolution (preferred). false returns the original file bytes."},"task":{"type":"string","minLength":1,"maxLength":80},"summary":{"type":"string","minLength":7,"maxLength":2048}}), &["workspace_id","path","task","summary"]),json!({"type":"object"}),json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})));
     for tool in &mut definitions {
         if matches!(
             tool["name"].as_str(),
             Some("bash" | "python" | "terminal_write" | "terminal_read" | "terminal_capture")
         ) {
             tool["inputSchema"]["properties"]["task"] = json!({"type":"string","minLength":1,"maxLength":80,"description":"Simple task name. Reuse it across calls for this task in this workspace."});
-            tool["inputSchema"]["properties"]["summary"] = json!({"type":"string","minLength":7,"maxLength":240,"description":"Current progress n/100, then a short action description containing fewer than 20 words. Example: 35/100 Testing query proxy resources."});
+            tool["inputSchema"]["properties"]["summary"] = json!({"type":"string","minLength":7,"maxLength":240,"description":"Quality score n/100 (100 = perfect), then a short action description containing fewer than 20 words. Example: 70/100 Testing query proxy resources."});
             let required = tool["inputSchema"]["required"].as_array_mut().unwrap();
             required.push(json!("task"));
             required.push(json!("summary"));
@@ -1372,7 +1381,7 @@ pub(crate) fn validate_tracking(task: &Value, summary: &Value) -> Result<()> {
     }
     let summary = summary
         .as_str()
-        .context("summary must be n/100 followed by a description")?;
+        .context("summary must be a quality score n/100 followed by a description")?;
     if summary.chars().count() > 2048 || summary.chars().any(char::is_control) {
         bail!("summary must be one line of at most 2048 characters");
     }
@@ -1382,13 +1391,13 @@ pub(crate) fn validate_tracking(task: &Value, summary: &Value) -> Result<()> {
     }
     let number = fields[0]
         .strip_suffix("/100")
-        .context("summary must start with n/100")?;
+        .context("summary must start with a quality score n/100")?;
     if number.is_empty()
         || (number.len() > 2 && number != "100")
         || !number.bytes().all(|b| b.is_ascii_digit())
         || number.parse::<u16>()? > 100
     {
-        bail!("summary progress must be 0..100/100");
+        bail!("summary quality score must be 0..100/100");
     }
     Ok(())
 }
@@ -2320,7 +2329,7 @@ mod task_tracking_tests {
         }
     }
     #[test]
-    fn progress_and_word_limits() {
+    fn quality_score_and_word_limits() {
         for n in [0, 35, 100] {
             assert!(
                 validate_tracking(

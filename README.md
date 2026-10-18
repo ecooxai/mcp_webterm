@@ -39,7 +39,9 @@ The same protected bearer token enables the native stateless MCP Streamable
 HTTP endpoint at `https://your-webterm-host/mcp` (with `/mcp/` accepted as an
 alias). Configure the token through `auth_token_file` in the WebTerm TOML file
 or `WEBTERM_AUTH_TOKEN`; never put it in the endpoint URL. MCP does not accept
-the browser session cookie.
+the browser session cookie. For clients that only take a URL, the web password
+works as `https://your-webterm-host/mcp?password=<web-password>` (or
+`?passwd=`), checked against the `web_password_hash_file` hash or `--passwd`.
 
 ```sh
 curl https://your-webterm-host/mcp \
@@ -577,7 +579,7 @@ By default `/mcp` returns plain text: tools advertise no `outputSchema` and each
 
 ## Portable GitHub releases
 
-Linux x86_64 releases include `webterm-linux-x86_64`, a versioned `.tar.gz` bundle, `BUILD-INFO.json`, and `SHA256SUMS`. The executable uses the normal GNU/glibc Linux ABI; Bash and Python 3 are still required for shell/MCP operations. No Rust compiler is needed on the target host. Check `BUILD-INFO.json` for the required GLIBC symbol version and shared libraries. Release building and verification are documented in [docs/releases.md](docs/releases.md).
+Every `v*` tag runs `.github/workflows/release.yml`, which builds `webterm-linux-x86_64` (Ubuntu 22.04, glibc 2.34+) and `webterm-macos-universal` (arm64 + x86_64, macOS 11+), each with a versioned `.tar.gz` bundle and `SHA256SUMS` / `SHA256SUMS-macos`. If the release already exists it only adds missing assets. `.github/workflows/ci.yml` builds and tests on Linux and macOS for every pull request. Hand-built Linux releases also include `BUILD-INFO.json`. The executable uses the normal GNU/glibc Linux ABI; Bash and Python 3 are still required for shell/MCP operations. No Rust compiler is needed on the target host. Check `BUILD-INFO.json` for the required GLIBC symbol version and shared libraries. Release building and verification are documented in [docs/releases.md](docs/releases.md).
 
 
 ### Short output and error diagnostics (v0.2.2)

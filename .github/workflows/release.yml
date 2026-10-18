@@ -27,7 +27,60 @@ jobs:
           set -euo pipefail
           mkdir -p release
           install -m 0755 target/release/webterm release/webterm-linux-x86_64
-          (cd release && sha256sum webterm-linux-x86_64 > SHA256SUMS)
+          tar -C release -czf "release/webterm-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" webterm-linux-x86_64
+          (cd release && sha256sum webterm-linux-x86_64 "webterm-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: release/*
+
+  macos-universal:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build release
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          lipo -create \
+            target/aarch64-apple-darwin/release/webterm \
+            target/x86_64-apple-darwin/release/webterm \
+            -output release/webterm-macos-universal
+          chmod 0755 release/webterm-macos-universal
+          lipo -info release/webterm-macos-universal
+          ./release/webterm-macos-universal --version
+          tar -C release -czf "release/webterm-${GITHUB_REF_NAME}-macos-universal.tar.gz" webterm-macos-universal
+          (cd release && shasum -a 256 webterm-macos-universal "webterm-${GITHUB_REF_NAME}-macos-universal.tar.gz" > SHA256SUMS-macos)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: release/*
+
+  publish:
+    needs: [linux-x86_64, macos-universal]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
 
       - name: Publish GitHub Release
         env:
@@ -35,9 +88,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" \
-            release/webterm-linux-x86_64 \
-            release/SHA256SUMS \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "WebTerm ${GITHUB_REF_NAME}" \
-            --generate-notes
+          cd release
+          ls -l
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            # A release published by hand keeps its assets; only add missing ones.
+            existing=$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
+            for file in *; do
+              if grep -qxF "$file" <<<"$existing"; then
+                echo "keep existing $file"
+              else
+                gh release upload "${GITHUB_REF_NAME}" "$file" --repo "${GITHUB_REPOSITORY}"
+              fi
+            done
+          else
+            gh release create "${GITHUB_REF_NAME}" * \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "WebTerm ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi

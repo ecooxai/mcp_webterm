@@ -97,7 +97,7 @@ pub fn router(config: Config) -> Result<Router> {
 }
 
 fn router_with_auth(config: Config, password_hash: Option<String>, ttl: Duration) -> Router {
-    let mcp_router = crate::mcp::router(config.clone());
+    let mcp_router = crate::mcp::router_with_password_hash(config.clone(), password_hash.clone());
     let state = AppState {
         config: Arc::new(config),
         browser_auth: Arc::new(BrowserAuth {

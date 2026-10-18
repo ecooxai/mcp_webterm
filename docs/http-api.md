@@ -34,8 +34,12 @@ curl https://webterm.example/mcp \
   --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"example","version":"1"}}}'
 ```
 
-For baseline compatibility, a configured development web password is also
-accepted as the single `passwd` query parameter for MCP compatibility (for example `?passwd=<configured-password>`).
+The web password is also accepted as a single `password` or `passwd` query
+parameter (for example `/mcp?password=<web-password>`), for clients that can
+only take a URL. It is checked against `--passwd`/`WEBTERM_PASSWORD` or, in
+production, against the Argon2id hash in `web_password_hash_file`; the value is
+percent-decoded, and repeated or mixed keys are rejected. A web password alone
+(no bearer token) is enough to enable MCP.
 Bearer tokens are never accepted in the URL, and browser session cookies do not
 authenticate MCP. A missing or incorrect credential returns `401`; a server
 without either configured credential returns `503`. Supplied browser `Origin`

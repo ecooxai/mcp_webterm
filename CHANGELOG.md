@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.12 - 2026-10-18
+
+- MCP `?password=` / `?passwd=` now works when the server only has a password hash (`web_password_hash_file`), not just `--passwd`. Before, a production install answered `401` to every password URL, so the web UI signed in but MCP clients could not. The value is percent-decoded; Argon2 runs once per new password and later calls compare against the cached match. A password hash alone enables MCP.
+- Release workflow builds Linux x86_64 and macOS universal binaries with tarballs and checksums on every tag, and adds only missing assets when the release already exists (it used to fail).
+- New CI workflow builds and tests on Ubuntu 22.04 and macOS 14 for pull requests.
+
 ## 0.2.11 - 2026-10-14
 
 - Sidebar: on small screens it is a floating panel with no slide animation; the folder pane is 70% of the viewport; the three most recently opened workspaces are listed above the workspace selector.

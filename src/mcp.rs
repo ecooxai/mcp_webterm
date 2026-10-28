@@ -177,7 +177,7 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
 
     let bearer_configured = state.config.auth_token.is_some();
     let password_configured = state.config.web_password.is_some() || state.password.hash.is_some();
-    if !bearer_configured && !password_configured {
+    if !state.config.auth_disabled && !bearer_configured && !password_configured {
         return plain_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "MCP authentication is not configured",
@@ -207,7 +207,7 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
             None => false,
         }
     };
-    if !bearer_ok && !password_ok {
+    if !state.config.auth_disabled && !bearer_ok && !password_ok {
         let mut response = plain_error(StatusCode::UNAUTHORIZED, "unauthorized");
         if bearer_configured {
             response.headers_mut().insert(
@@ -2081,6 +2081,26 @@ mod tests {
                 Request::builder()
                     .method(Method::POST)
                     .uri("/mcp?password=only-a-hash")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_none_allows_mcp_without_credentials() {
+        let temp = TempDir::new().unwrap();
+        let mut config = test_config(&temp);
+        config.auth_token = None;
+        config.auth_disabled = true;
+        let response = router(config)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mcp")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
                     .unwrap(),

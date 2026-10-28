@@ -42,6 +42,7 @@ async fn monitor_css() -> Response {
 }
 
 fn bearer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    if state.config.auth_disabled { return true; }
     let Some(expected) = state.config.auth_token.as_deref() else { return false; };
     headers.get(header::AUTHORIZATION).and_then(|v|v.to_str().ok())
         .and_then(|v|v.strip_prefix("Bearer "))

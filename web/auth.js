@@ -31,7 +31,8 @@
     if(!force&&session&&session.expiresAt>Date.now())return session;
     if(pending)return pending;
     const password=saved();
-    if(!password){const e=new Error('Sign in to WebTerm.');e.status=401;throw e;}
+    // An empty password only succeeds on servers started with --auth none (public mode).
+    if(!password){pending=login('',false).catch(()=>{const e=new Error('Sign in to WebTerm.');e.status=401;throw e;}).finally(()=>{pending=null;});return pending;}
     pending=login(password,false).catch(error=>{if(error.status===401)clear();throw error;}).finally(()=>{pending=null;});
     return pending;
   }

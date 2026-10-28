@@ -23,6 +23,10 @@ struct Cli {
     /// Development web password. Prefer a protected password-hash file in production.
     #[arg(long, global = true, env = "WEBTERM_PASSWORD")]
     passwd: Option<String>,
+    /// `none` disables the password and bearer token so anyone who can reach the
+    /// server gets full access (public mode). Default `password`.
+    #[arg(long, global = true, env = "WEBTERM_AUTH", value_parser = ["password", "none"], default_value = "password")]
+    auth: String,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -185,6 +189,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut config = Config::load(cli.config.as_deref())?;
     config.web_password = cli.passwd;
+    config.auth_disabled = cli.auth == "none";
     match cli.command.unwrap_or(Command::Tui) {
         Command::Serve => serve(config).await,
         Command::Runtime => {
@@ -493,6 +498,11 @@ fn print_terminal(terminal: &Terminal, json: bool) -> Result<()> {
 
 async fn serve(config: Config) -> Result<()> {
     webterm::runtime::raise_fd_limit();
+    if config.auth_disabled {
+        tracing::warn!(
+            "--auth none: web UI, API and MCP are open to anyone who can reach this server"
+        );
+    }
     config.ensure_state_dirs()?;
     webterm::db::ensure_default_workspace_folder(&config)?;
 

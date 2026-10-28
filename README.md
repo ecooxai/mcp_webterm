@@ -66,6 +66,8 @@ Configuration can be selected with `--config` or `WEBTERM_CONFIG`. `WEBTERM_LIST
 
 Configure the WebTerm password through the service environment instead of hard-coding it in unit files or URLs. Browser login stores the validated password only in browser localStorage and exchanges it for short-lived explicit header credentials; it does not use cookies. The browser login path hashes the configured password with Argon2id at startup and keeps only the hash for verification.
 
+Public mode: `webterm --auth none serve` (or `WEBTERM_AUTH=none`) turns off the password and bearer token. The browser opens straight into the terminals and `/mcp` answers without `?password=` or `Authorization`, so anyone who can reach the port can run commands as the service user. Only use it on a trusted network or behind your own access control. The Origin checks and the forward proxy token still apply.
+
 For production, remove `--passwd`, generate an Argon2id PHC string using a trusted offline password tool, store it mode 0600, and set `web_password_hash_file` to that protected path (systemd credentials are preferred). Restarting the service invalidates all in-memory browser sessions. Rotate the separate bearer token independently.
 
 Browser sessions use an in-memory session/CSRF pair, a fixed expiry, same-origin enforcement, CSRF tokens for logout/mutations, and bounded login rate limiting. Authentication headers and the WebSocket subprotocol carry credentials; cookies do not authenticate browser sessions. See [`docs/http-api.md`](docs/http-api.md) for the v1 endpoints.

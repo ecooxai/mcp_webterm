@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.14 - 2026-10-28
+
+- `--auth none` (or `WEBTERM_AUTH=none`) runs WebTerm in public mode: no password or bearer token for the web UI, the REST API or `/mcp`. The browser skips the sign-in form, and MCP clients connect with a bare `https://host/mcp` URL. The default stays `--auth password`, and `serve` logs a warning when public mode is on. Origin checks and the forward-proxy token are unchanged.
+
 ## 0.2.13 - 2026-10-28
 
 - Sidebar file tree refreshes reliably on macOS. A listing request that never answered (laptop sleep/wake, a dropped Cloudflare tunnel connection) used to leave the folder marked as loading, which blocked every later automatic and manual refresh. Each listing now times out after 15 s, and the refresh button cancels a stuck request and lists the folder again.

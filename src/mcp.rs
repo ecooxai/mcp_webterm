@@ -40,6 +40,61 @@ const MAX_TERMINALS: usize = 2_000;
 #[derive(Clone)]
 struct McpState {
     config: Arc<Config>,
+    password: Arc<QueryPassword>,
+}
+
+/// Verifies `?password=` / `?passwd=` against the configured web password
+/// hash. Argon2 runs once per distinct password; the last verified value is
+/// kept so later calls compare in constant time without rehashing.
+#[derive(Default)]
+struct QueryPassword {
+    hash: Option<String>,
+    verified: std::sync::Mutex<Option<Vec<u8>>>,
+    verifying: tokio::sync::Mutex<()>,
+}
+
+impl QueryPassword {
+    fn matches_cached(&self, supplied: &[u8]) -> bool {
+        self.verified
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_deref()
+            .is_some_and(|known| known.len() == supplied.len() && bool::from(known.ct_eq(supplied)))
+    }
+
+    async fn verify(&self, supplied: String) -> bool {
+        let Some(hash) = self.hash.clone() else {
+            return false;
+        };
+        if supplied.is_empty() || supplied.len() > 1024 {
+            return false;
+        }
+        if self.matches_cached(supplied.as_bytes()) {
+            return true;
+        }
+        let _serial = self.verifying.lock().await;
+        if self.matches_cached(supplied.as_bytes()) {
+            return true;
+        }
+        let candidate = supplied.clone();
+        let ok = tokio::task::spawn_blocking(move || {
+            use argon2::{Argon2, PasswordHash, PasswordVerifier};
+            PasswordHash::new(&hash).is_ok_and(|parsed| {
+                Argon2::default()
+                    .verify_password(candidate.as_bytes(), &parsed)
+                    .is_ok()
+            })
+        })
+        .await
+        .unwrap_or(false);
+        if ok {
+            *self
+                .verified
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(supplied.into_bytes());
+        }
+        ok
+    }
 }
 
 /// Build the authenticated, stateless MCP Streamable HTTP routes.
@@ -48,6 +103,18 @@ struct McpState {
 /// application router. Both spellings are intentional because some MCP client
 /// URL normalizers retain a trailing slash.
 pub fn router(config: Config) -> Router {
+    let password_hash = config
+        .web_password_hash_file
+        .as_deref()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .map(|hash| hash.trim().to_owned())
+        .filter(|hash| !hash.is_empty());
+    router_with_password_hash(config, password_hash)
+}
+
+/// Same as [`router`], with the web password hash already loaded and validated
+/// by the browser-auth router so both share one source of truth.
+pub fn router_with_password_hash(config: Config, password_hash: Option<String>) -> Router {
     crate::audit::initialize(&config);
     Router::new()
         .route("/mcp", post(mcp_post))
@@ -55,6 +122,10 @@ pub fn router(config: Config) -> Router {
         .layer(middleware::from_fn(response_headers))
         .with_state(McpState {
             config: Arc::new(config),
+            password: Arc::new(QueryPassword {
+                hash: password_hash,
+                ..QueryPassword::default()
+            }),
         })
 }
 
@@ -105,7 +176,7 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
     }
 
     let bearer_configured = state.config.auth_token.is_some();
-    let password_configured = state.config.web_password.is_some();
+    let password_configured = state.config.web_password.is_some() || state.password.hash.is_some();
     if !bearer_configured && !password_configured {
         return plain_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -118,11 +189,24 @@ async fn mcp_post(State(state): State<McpState>, request: Request<Body>) -> Resp
         .auth_token
         .as_deref()
         .is_some_and(|expected| authorized(headers, expected));
-    let password_ok = state
-        .config
-        .web_password
-        .as_deref()
-        .is_some_and(|expected| query_password_authorized(request.uri().query(), expected));
+    let password_ok = if bearer_ok {
+        false
+    } else {
+        match query_password(request.uri().query()) {
+            Some(supplied) => {
+                let plain_ok = state
+                    .config
+                    .web_password
+                    .as_deref()
+                    .is_some_and(|expected| {
+                        supplied.len() == expected.len()
+                            && bool::from(supplied.as_bytes().ct_eq(expected.as_bytes()))
+                    });
+                plain_ok || state.password.verify(supplied).await
+            }
+            None => false,
+        }
+    };
     if !bearer_ok && !password_ok {
         let mut response = plain_error(StatusCode::UNAUTHORIZED, "unauthorized");
         if bearer_configured {
@@ -1685,25 +1769,19 @@ fn truncate_utf8(mut value: String, maximum: usize) -> (String, bool) {
     (value, true)
 }
 
-fn query_password_authorized(query: Option<&str>, expected: &str) -> bool {
-    let Some(query) = query else {
-        return false;
-    };
+/// Returns the single `password` or `passwd` query value (percent-decoded).
+/// Repeated or mixed keys are rejected so a URL cannot carry two candidates.
+fn query_password(query: Option<&str>) -> Option<String> {
     let mut supplied = None;
-    for pair in query.split('&') {
-        let Some((key, value)) = pair.split_once('=') else {
-            continue;
-        };
+    for (key, value) in url::form_urlencoded::parse(query?.as_bytes()) {
         if key != "passwd" && key != "password" {
             continue;
         }
-        if supplied.replace(value).is_some() {
-            return false;
+        if supplied.replace(value.into_owned()).is_some() {
+            return None;
         }
     }
     supplied
-        .filter(|value| value.len() == expected.len())
-        .is_some_and(|value| bool::from(value.as_bytes().ct_eq(expected.as_bytes())))
 }
 
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
@@ -1942,6 +2020,74 @@ mod tests {
             app.oneshot(duplicate).await.unwrap().status(),
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn query_password_is_checked_against_the_password_hash_file() {
+        let temp = TempDir::new().unwrap();
+        let hash_file = temp.path().join("password-hash");
+        fs::write(
+            &hash_file,
+            crate::web::hash_password("p@ss word&1").unwrap(),
+        )
+        .unwrap();
+        let mut config = test_config(&temp);
+        config.web_password_hash_file = Some(hash_file);
+        let app = router(config);
+        let ping = |uri: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+                .unwrap()
+        };
+        for uri in [
+            "/mcp?password=p%40ss%20word%261",
+            "/mcp/?passwd=p%40ss+word%261",
+            "/mcp?output_type=json&password=p%40ss%20word%261",
+        ] {
+            let response = app.clone().oneshot(ping(uri)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        }
+        for uri in [
+            "/mcp?password=wrong",
+            "/mcp?password=p%40ss%20word%261&passwd=p%40ss%20word%261",
+            "/mcp",
+        ] {
+            assert_eq!(
+                app.clone().oneshot(ping(uri)).await.unwrap().status(),
+                StatusCode::UNAUTHORIZED,
+                "{uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn password_hash_alone_enables_mcp() {
+        let temp = TempDir::new().unwrap();
+        let hash_file = temp.path().join("password-hash");
+        fs::write(
+            &hash_file,
+            crate::web::hash_password("only-a-hash").unwrap(),
+        )
+        .unwrap();
+        let mut config = test_config(&temp);
+        config.auth_token = None;
+        config.web_password_hash_file = Some(hash_file);
+        let response = router(config)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/mcp?password=only-a-hash")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

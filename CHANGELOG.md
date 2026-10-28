@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.13 - 2026-10-28
+
+- Sidebar file tree refreshes reliably on macOS. A listing request that never answered (laptop sleep/wake, a dropped Cloudflare tunnel connection) used to leave the folder marked as loading, which blocked every later automatic and manual refresh. Each listing now times out after 15 s, and the refresh button cancels a stuck request and lists the folder again.
+- Created and deleted files show up faster: the tree polls every 3 s (was 5 s), refreshes when the window regains focus or the network comes back, and checks again 0.8 s and 2.5 s after Enter is pressed in a terminal.
+- `/api/v1/files/list` requests carry a cache-busting parameter and the response sends `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`, so a browser or proxy cache can't serve a stale listing.
+- `webterm serve` raises its open-file limit like the runtime does. Under launchd the macOS default soft limit is 256, which a busy server can exhaust (EMFILE). If a value above `kern.maxfilesperproc` is rejected, the server falls back to 10240.
+
 ## 0.2.12 - 2026-10-18
 
 - MCP `?password=` / `?passwd=` now works when the server only has a password hash (`web_password_hash_file`), not just `--passwd`. Before, a production install answered `401` to every password URL, so the web UI signed in but MCP clients could not. The value is percent-decoded; Argon2 runs once per new password and later calls compare against the cached match. A password hash alone enables MCP.

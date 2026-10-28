@@ -55,7 +55,7 @@ async fn explorer_list(
     )
     .await;
     r.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"));
     r
 }
 async fn explorer_preview(

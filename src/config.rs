@@ -32,6 +32,9 @@ pub struct Config {
     pub auth_token: Option<String>,
     #[serde(skip_serializing, skip_deserializing)]
     pub web_password: Option<String>,
+    /// `--auth none`: no password or token is required for the web UI, API or MCP.
+    #[serde(skip_serializing, skip_deserializing)]
+    pub auth_disabled: bool,
 }
 
 impl Default for Config {
@@ -57,6 +60,7 @@ impl Default for Config {
             runtime_swap_dir: None,
             auth_token: None,
             web_password: None,
+            auth_disabled: false,
         }
     }
 }

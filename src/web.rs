@@ -308,6 +308,9 @@ async fn browser_metrics(State(state): State<AppState>, headers: HeaderMap) -> R
 }
 
 async fn bearer_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if state.config.auth_disabled {
+        return Json(Health { status: "ok" }).into_response();
+    }
     let Some(expected) = state.config.auth_token.as_deref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -413,6 +416,10 @@ async fn verify_browser_password(
     headers: &HeaderMap,
     password: String,
 ) -> Option<Response> {
+    if state.config.auth_disabled {
+        release_password_memory();
+        return None;
+    }
     if password.is_empty() || password.len() > 1024 {
         release_password_memory();
         return Some((StatusCode::UNAUTHORIZED, "invalid credentials").into_response());
@@ -1975,6 +1982,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn auth_none_signs_in_without_password() {
+        let public = router_with_auth(
+            Config {
+                auth_disabled: true,
+                ..Config::default()
+            },
+            None,
+            Duration::from_secs(600),
+        );
+        let login = |app: Router| async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/login")
+                    .header("host", "webterm.example")
+                    .header("origin", "http://webterm.example")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        };
+        assert_eq!(login(public).await, StatusCode::OK);
+        assert_eq!(login(test_router()).await, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

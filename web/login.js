@@ -58,5 +58,7 @@
     error.textContent = "Enter the password here; credentials are no longer accepted in page URLs.";
   } else if (window.WebTermAuth.saved()) {
     location.replace(destination + "?app=1&proxyport=0");
+  } else {
+    window.WebTermAuth.getSession().then(() => location.replace(destination + "?app=1&proxyport=0"), () => {});
   }
 })();

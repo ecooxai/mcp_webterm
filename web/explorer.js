@@ -18,7 +18,12 @@
     previewSequence = 0,
     viewerActive = false,
     initialized = false,
-    busy = false;
+    busy = 0,
+    soonTimers = [];
+  // A listing that never answers (sleep/wake, a dropped tunnel connection) must not
+  // block later refreshes, so every request is bounded and in-flight state expires.
+  const LIST_TIMEOUT_MS = 15_000;
+  const REFRESH_MS = 3_000;
   const el = (tag, className, text) => {
     const n = document.createElement(tag);
     if (className) n.className = className;
@@ -113,10 +118,12 @@
       if (mini.contains(target) || target.closest?.(".file-tree-row")) return;
       closeMini();
     });
-    setInterval(() => refresh(), 5000);
+    setInterval(() => refresh(), REFRESH_MS);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refresh();
     });
+    for (const name of ["focus", "pageshow", "online"])
+      window.addEventListener(name, () => refresh());
   }
   function observe(workspaces) {
     for (const ws of workspaces) {
@@ -188,7 +195,7 @@
       });
       node
         .querySelector(".file-tree-refresh")
-        .addEventListener("click", () => refreshWorkspace(model(ws)));
+        .addEventListener("click", () => refreshWorkspace(model(ws), true));
     }
     if (open && m.mode === "files") {
       renderTree(m);
@@ -262,9 +269,12 @@
     visit(m.ws.path, 0);
     return found;
   }
-  async function loadFolder(m, path, more = false) {
+  async function loadFolder(m, path, more = false, force = false) {
     let cache = m.cache.get(path);
-    if (cache?.loading) return;
+    if (cache?.loading) {
+      if (!force && Date.now() - cache.started < LIST_TIMEOUT_MS) return;
+      cache.controller?.abort();
+    }
     if (!cache) {
       cache = {
         entries: [],
@@ -276,7 +286,10 @@
       };
       m.cache.set(path, cache);
     }
-    cache.loading = true;
+    const controller = new AbortController(),
+      timer = setTimeout(() => controller.abort(), LIST_TIMEOUT_MS),
+      sequence = (cache.sequence || 0) + 1;
+    Object.assign(cache, { loading: true, started: Date.now(), controller, sequence });
     if (!cache.initialized) renderTree(m);
     try {
       const entries = [];
@@ -287,9 +300,10 @@
         : Math.max(1, Math.ceil(cache.entries.length / 500));
       for (let i = 0; i < target; i++) {
         const { body } = await ctx.request(
-          `/files/list?${new URLSearchParams({ workspace_id: m.ws.id, path, offset: String(offset) })}`,
-          { method: "GET" },
+          `/files/list?${new URLSearchParams({ workspace_id: m.ws.id, path, offset: String(offset), t: String(Date.now()) })}`,
+          { method: "GET", signal: controller.signal },
         );
+        if (cache.sequence !== sequence) return;
         entries.push(...body.entries);
         next = body.next_offset;
         cache.total = body.total;
@@ -310,23 +324,37 @@
       cache.initialized = true;
       cache.last = Date.now();
     } catch (error) {
-      cache.error = error.message || "Folder unavailable";
+      if (cache.sequence === sequence)
+        cache.error =
+          error.name === "AbortError"
+            ? "Folder listing timed out"
+            : error.message || "Folder unavailable";
     } finally {
-      cache.loading = false;
-      if (models.has(m.ws.id)) renderTree(m);
+      clearTimeout(timer);
+      if (cache.sequence === sequence) {
+        cache.loading = false;
+        cache.controller = null;
+        if (models.has(m.ws.id)) renderTree(m);
+      }
     }
   }
-  async function refreshWorkspace(m) {
+  async function refreshWorkspace(m, force = false) {
     if (!ctx.state.expanded.has(m.ws.id) || m.mode !== "files") return;
     const paths = visibleDirs(m);
     for (let i = 0; i < paths.length; i += 4)
       await Promise.all(
-        paths.slice(i, i + 4).map((path) => loadFolder(m, path)),
+        paths.slice(i, i + 4).map((path) => loadFolder(m, path, false, force)),
       );
   }
+  // Commands typed in a terminal usually create or delete files; look again shortly after.
+  function refreshSoon() {
+    for (const t of soonTimers) clearTimeout(t);
+    soonTimers = [800, 2500].map((ms) => setTimeout(() => refresh(), ms));
+  }
   async function refresh() {
-    if (!ctx?.state.authenticated || document.hidden || busy) return;
-    busy = true;
+    if (!ctx?.state.authenticated || document.hidden) return;
+    if (busy && Date.now() - busy < LIST_TIMEOUT_MS * 2) return;
+    const started = (busy = Date.now());
     try {
       const active = [...models.values()].filter(
         (m) => ctx.state.expanded.has(m.ws.id) && m.mode === "files",
@@ -336,7 +364,7 @@
           active.slice(i, i + 3).map((m) => refreshWorkspace(m)),
         );
     } finally {
-      busy = false;
+      if (busy === started) busy = 0;
     }
   }
   function renderTree(m) {
@@ -952,6 +980,7 @@
     togglePath,
     copyPath,
     refresh,
+    refreshSoon,
     hideViewer,
     updateTabs,
     clear,

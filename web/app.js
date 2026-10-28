@@ -1722,6 +1722,7 @@
       return;
     }
     session.socket.send(JSON.stringify({ type: "input", data }));
+    if (data.includes("\r")) window.WebTermExplorer.refreshSoon();
   }
 
   function sendTerminalResize(session, cols, rows) {

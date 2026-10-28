@@ -492,6 +492,7 @@ fn print_terminal(terminal: &Terminal, json: bool) -> Result<()> {
 }
 
 async fn serve(config: Config) -> Result<()> {
+    webterm::runtime::raise_fd_limit();
     config.ensure_state_dirs()?;
     webterm::db::ensure_default_workspace_folder(&config)?;
 

@@ -2005,7 +2005,9 @@ fn wake_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(pipe)
 }
 
-fn raise_fd_limit() {
+/// launchd starts agents with a 256-descriptor soft limit on macOS; raise it so
+/// listings, sockets and terminals do not fail with EMFILE under load.
+pub fn raise_fd_limit() {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -2014,12 +2016,17 @@ fn raise_fd_limit() {
         return;
     }
     let target = (limit.rlim_max as u64).min(FD_LIMIT_TARGET);
-    if (limit.rlim_cur as u64) < target {
-        limit.rlim_cur = target as libc::rlim_t;
-        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
-            tracing::warn!(error = %io::Error::last_os_error(), "could not raise descriptor limit");
+    if (limit.rlim_cur as u64) >= target {
+        return;
+    }
+    // macOS rejects values above kern.maxfilesperproc; OPEN_MAX (10240) is always accepted.
+    for value in [target, target.min(10_240)] {
+        limit.rlim_cur = value as libc::rlim_t;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+            return;
         }
     }
+    tracing::warn!(error = %io::Error::last_os_error(), "could not raise descriptor limit");
 }
 
 /// Process count per terminal session ID (the shell's PID).
